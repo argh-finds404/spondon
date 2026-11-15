@@ -107,7 +107,8 @@ function followPeak(s: DrawState, x: Float32Array): number {
     const a = x[i] < 0 ? -x[i] : x[i];
     if (a > max) max = a;
   }
-  s.peak = Math.max(max, s.peak * 0.97, 1e-4);
+  const decay = max < s.peak * 0.25 ? 0.88 : 0.96;
+  s.peak = Math.max(max, s.peak * decay, 1.5e-3);
   return s.peak;
 }
 

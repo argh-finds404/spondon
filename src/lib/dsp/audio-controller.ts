@@ -43,6 +43,8 @@ export class AudioController {
   settings: SynthSettings;
   analyzer: VoiceAnalyzer;
   volume = 0.4;
+  inputGain = 2.5;
+  deviceLabel: string | null = null;
   onStreamEnded: (() => void) | null = null;
 
   private raw: Float32Array<ArrayBuffer>;
@@ -51,6 +53,7 @@ export class AudioController {
   private rafId = 0;
   private ctx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
+  private inGain: GainNode | null = null;
   private out: GainNode | null = null;
   private stream: MediaStream | null = null;
   private voice: { src: AudioBufferSourceNode; gain: GainNode; startedAt: number } | null = null;
@@ -113,6 +116,13 @@ export class AudioController {
     if (this.out && this.ctx) this.out.gain.setTargetAtTime(volume, this.ctx.currentTime, 0.02);
   }
 
+  setInputGain(gain: number): void {
+    this.inputGain = Math.max(0.5, Math.min(12, gain));
+    if (this.inGain && this.ctx) {
+      this.inGain.gain.setTargetAtTime(this.inputGain, this.ctx.currentTime, 0.02);
+    }
+  }
+
   /** Must be called from a user gesture: browsers only start audio, or ask for the microphone/tab, on one. */
   async start(mode: "synth" | "mic" | "stream"): Promise<void> {
     this.release();
@@ -123,6 +133,14 @@ export class AudioController {
         // The browser's speech clean-up would reshape the very resonances being measured.
         this.stream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        });
+        const micTrack = this.stream.getAudioTracks()[0];
+        if (!micTrack) {
+          throw new Error("No microphone audio track was returned by the browser.");
+        }
+        this.deviceLabel = micTrack.label || "Microphone active";
+        micTrack.addEventListener("ended", () => {
+          this.onStreamEnded?.();
         });
       } else if (mode === "stream") {
         if (!navigator.mediaDevices?.getDisplayMedia) {
@@ -138,6 +156,7 @@ export class AudioController {
           displayStream.getTracks().forEach((t) => t.stop());
           throw new Error("Enable 'Share tab audio' in the browser picker to analyze YouTube or music streams.");
         }
+        this.deviceLabel = audioTrack.label || "Shared tab audio";
         audioTrack.addEventListener("ended", () => {
           this.onStreamEnded?.();
         });
@@ -148,10 +167,16 @@ export class AudioController {
       if (this.analyzer.rawSize > 32768) throw new Error(`Unsupported sample rate: ${ctx.sampleRate} Hz`);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = this.analyzer.rawSize;
+      analyser.smoothingTimeConstant = 0;
       this.analyser = analyser;
       if ((mode === "mic" || mode === "stream") && this.stream) {
-        // Analysed, never routed to the speakers (prevents double-echo).
-        ctx.createMediaStreamSource(this.stream).connect(analyser);
+        // Analysed through a clean pre-gain node, never routed to the speakers (prevents feedback/echo).
+        const inGain = ctx.createGain();
+        inGain.gain.value = mode === "mic" ? this.inputGain : 1;
+        this.inGain = inGain;
+        const srcNode = ctx.createMediaStreamSource(this.stream);
+        srcNode.connect(inGain);
+        inGain.connect(analyser);
       } else {
         this.out = ctx.createGain();
         this.out.gain.value = this.volume;
@@ -169,6 +194,7 @@ export class AudioController {
   stop(): void {
     this.release();
     this.mode = "silent";
+    this.deviceLabel = null;
     this.useRate(SILENT_RATE);
   }
 
@@ -178,6 +204,7 @@ export class AudioController {
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
     this.analyser = null;
+    this.inGain = null;
     this.out = null;
     void this.ctx?.close();
     this.ctx = null;
@@ -248,8 +275,9 @@ export class AudioController {
 
   private tick = (now: number): void => {
     this.rafId = requestAnimationFrame(this.tick);
-    const { raw, analyser } = this;
+    const { raw, analyser, ctx } = this;
     if (this.mode !== "silent" && analyser) {
+      if (ctx && ctx.state === "suspended") void ctx.resume();
       analyser.getFloatTimeDomainData(raw);
     } else {
       const { loop } = this;

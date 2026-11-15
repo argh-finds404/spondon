@@ -6,7 +6,7 @@ import { PlateStage } from "@/components/instrument/PlateStage";
 import { Readout, type ReadoutField } from "@/components/instrument/Readout";
 import { Trace } from "@/components/instrument/Trace";
 import type { TraceKind } from "@/components/instrument/draw";
-import { findVowel, VOWEL_TARGETS, vowelGlyph } from "@/lib/dsp/vowel-targets";
+import { findVowel, nearestVowel, VOWEL_TARGETS, vowelGlyph } from "@/lib/dsp/vowel-targets";
 import { WINDOW_INFO, WINDOW_TYPES } from "@/lib/dsp/windows";
 import { labRuntime, useLabStore, type LabView, type TraceStageId } from "@/store/lab-store";
 import type { DSPFrameTelemetry } from "@/types/dsp";
@@ -182,11 +182,24 @@ function VoiceControls() {
   const synth = useLabStore((s) => s.synth);
   const volume = useLabStore((s) => s.volume);
   const sourceMode = useLabStore((s) => s.sourceMode);
+  const micGain = useLabStore((s) => s.micGain);
+  const setMicGain = useLabStore((s) => s.setMicGain);
   const liveInput = sourceMode === "mic" || sourceMode === "stream";
   const updateSynth = useLabStore((s) => s.updateSynth);
   const setVolume = useLabStore((s) => s.setVolume);
   return (
     <div className="px-3 py-2">
+      {sourceMode === "mic" && (
+        <Slider
+          label="Microphone input boost"
+          value={micGain}
+          min={1}
+          max={8}
+          step={0.5}
+          format={(v) => `× ${v.toFixed(1)}`}
+          onCommit={setMicGain}
+        />
+      )}
       <Slider label="Pitch" value={synth.f0Hz} min={70} max={350} step={1} disabled={liveInput} format={(v) => `${v.toFixed(0)} Hz`} onCommit={(v) => updateSynth({ f0Hz: v })} />
       <Slider label="Formant shift (tract length)" value={synth.formantShift} min={0.8} max={1.25} step={0.01} disabled={liveInput} format={(v) => `× ${v.toFixed(2)}`} onCommit={(v) => updateSynth({ formantShift: v })} />
       <Slider label="Jitter put in" value={synth.jitterPercent} min={0} max={3} step={0.1} disabled={liveInput} format={(v) => `${v.toFixed(1)} %`} onCommit={(v) => updateSynth({ jitterPercent: v })} />
@@ -770,6 +783,181 @@ function TraceInspector() {
   );
 }
 
+const MIC_GAINS = [1, 2.5, 5, 8] as const;
+
+/**
+ * Real-time hardware & acoustic capture monitor for Microphone and Tab/YouTube streams.
+ * Updates its VU meter bar and voice-gate status via DOM refs at 60 fps without triggering React re-renders.
+ */
+function LiveInputMonitor() {
+  const sourceMode = useLabStore((s) => s.sourceMode);
+  const deviceLabel = useLabStore((s) => s.micDeviceLabel);
+  const micGain = useLabStore((s) => s.micGain);
+  const setMicGain = useLabStore((s) => s.setMicGain);
+  const frozen = useLabStore((s) => s.frozen);
+  const toggleFreeze = useLabStore((s) => s.toggleFreeze);
+  const captureAndTrace = useLabStore((s) => s.captureAndTrace);
+  const armed = useLabStore((s) => s.autoCaptureArmed);
+  const setArmed = useLabStore((s) => s.setAutoCaptureArmed);
+
+  const barRef = useRef<HTMLDivElement>(null);
+  const statusRef = useRef<HTMLSpanElement>(null);
+  const detailRef = useRef<HTMLParagraphElement>(null);
+  const dotRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    let lastTextUpdate = 0;
+    return labRuntime.subscribe((t) => {
+      const bar = barRef.current;
+      const status = statusRef.current;
+      const detail = detailRef.current;
+      const dot = dotRef.current;
+      if (!bar || !status || !detail || !dot) return;
+
+      // Map rmsDb from [-72 dB .. -4 dB] to [2% .. 100%]
+      const db = t.stability.rmsDb;
+      const pct = Math.max(2, Math.min(100, ((db + 72) / 68) * 100));
+      bar.style.width = `${pct.toFixed(1)}%`;
+
+      const isFrozen = useLabStore.getState().frozen;
+      const hasSound = db > -56;
+      if (isFrozen) {
+        bar.style.backgroundColor = "var(--accent)";
+        dot.style.backgroundColor = "var(--accent)";
+      } else if (t.voiced) {
+        bar.style.backgroundColor = "#10b981";
+        dot.style.backgroundColor = "#10b981";
+      } else if (hasSound) {
+        bar.style.backgroundColor = "#00e5ff";
+        dot.style.backgroundColor = "#00e5ff";
+      } else {
+        bar.style.backgroundColor = "var(--muted)";
+        dot.style.backgroundColor = "var(--accent)";
+      }
+
+      const now = performance.now();
+      if (now - lastTextUpdate < 90 && !isFrozen) return;
+      lastTextUpdate = now;
+
+      if (isFrozen) {
+        status.textContent = "PAUSED ON CAPTURED SLICE";
+        detail.textContent = `F0 ${Math.round(t.stability.f0Hz)} Hz · F1 ${Math.round(t.formants.f1)} Hz · F2 ${Math.round(t.formants.f2)} Hz`;
+      } else if (t.voiced && t.formants.f1 > 0) {
+        const near = nearestVowel(t.formants.f1, t.formants.f2);
+        status.textContent = "● VOICE LOCKED — ANALYZING LIVE";
+        detail.textContent = `F0 ${Math.round(t.stability.f0Hz)} Hz · F1 ${Math.round(t.formants.f1)} Hz · F2 ${Math.round(t.formants.f2)} Hz · Nearest ${vowelGlyph(near)} /${near.symbol}/`;
+      } else if (hasSound) {
+        status.textContent = "◐ SOUND DETECTED (UNVOICED)";
+        detail.textContent = "Signal is reaching the analyzer — hold a steady vowel (আ /aa/, ই /ii/, উ /uu/) to lock pitch & formants";
+      } else {
+        status.textContent = "○ LISTENING FOR VOICE…";
+        detail.textContent =
+          sourceMode === "mic"
+            ? "Speak or hum a vowel into your microphone — increase Gain Boost if your mic is quiet"
+            : "Play audio in your shared browser tab to see live formants";
+      }
+    });
+  }, [sourceMode]);
+
+  return (
+    <section
+      role="status"
+      aria-label="Live audio input monitor"
+      className="ui-panel mb-3 border border-accent/40 bg-raised px-3 py-2.5 text-[12px]"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5">
+        {/* Left: Active Hardware Device + Live Voice Gate State */}
+        <div className="flex min-w-[260px] flex-1 items-center gap-3">
+          <span
+            ref={dotRef}
+            className={`mark shrink-0 bg-accent! ${frozen ? "" : "animate-pulse"}`}
+            aria-hidden
+          />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span ref={statusRef} className="font-semibold tracking-wide text-ink uppercase">
+                ○ LISTENING FOR VOICE…
+              </span>
+              <span className="truncate bg-surface px-1.5 py-0.5 text-[11px] text-muted">
+                {deviceLabel ?? (sourceMode === "mic" ? "Microphone active" : "Shared tab audio")}
+              </span>
+            </div>
+            <p ref={detailRef} className="ui-fig mt-0.5 truncate text-[12px] text-muted">
+              Speak or hum a vowel into your microphone — nothing is recorded or uploaded.
+            </p>
+          </div>
+        </div>
+
+        {/* Center: 60fps Real-Time VU Level Meter Bar */}
+        <div className="flex min-w-[210px] flex-1 items-center gap-3">
+          <span className="text-[11px] font-medium whitespace-nowrap text-muted uppercase">Input Level</span>
+          <div
+            className="relative h-3 flex-1 overflow-hidden border border-line bg-surface"
+            title="Live RMS input level (threshold line marks −58 dB FS voice gate)"
+          >
+            {/* Voice gate threshold marker at -58 dB */}
+            <div
+              className="pointer-events-none absolute top-0 bottom-0 z-10 w-px bg-ink/40"
+              style={{ left: "20.6%" }}
+            />
+            <div
+              ref={barRef}
+              className="h-full w-[4%] bg-muted transition-[width] duration-75"
+            />
+          </div>
+          <span className="ui-fig min-w-[7.5ch] text-right text-[12px] text-ink">
+            <Readout field="level" /> dB
+          </span>
+        </div>
+
+        {/* Right: Mic Gain Boost + Auto-Capture / Trace Controls */}
+        <div className="flex flex-wrap items-center gap-2">
+          {sourceMode === "mic" && (
+            <div role="group" aria-label="Microphone gain boost" className="flex items-center gap-1 bg-surface p-0.5">
+              <span className="px-1.5 text-[11px] text-muted">Gain</span>
+              {MIC_GAINS.map((g) => (
+                <button
+                  key={g}
+                  type="button"
+                  aria-pressed={micGain === g}
+                  onClick={() => setMicGain(g)}
+                  className={`px-2 py-0.5 text-[11px] font-medium ${
+                    micGain === g ? "bg-accent text-[#08090c] font-semibold" : "text-muted hover:text-ink"
+                  }`}
+                >
+                  {g}×
+                </button>
+              ))}
+            </div>
+          )}
+
+          <button
+            type="button"
+            aria-pressed={armed}
+            onClick={() => setArmed(!armed)}
+            className={`px-2.5 py-1 text-[12px] font-medium transition-colors ${
+              armed
+                ? "bg-accent text-[#08090c] font-semibold animate-pulse"
+                : "border border-line bg-surface text-ink hover:border-accent"
+            }`}
+            title="Arms a trigger that automatically freezes and opens the 8-stage X-Ray the moment you hold a steady spoken vowel"
+          >
+            {armed ? "● ARMED: Speak a vowel to auto-freeze…" : "Auto-capture next vowel"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => (frozen ? toggleFreeze() : captureAndTrace())}
+            className="btn min-h-7! px-2.5! py-1! text-[12px]"
+          >
+            {frozen ? "Resume live mic" : "Freeze & trace now"}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 const SIDE_TABS = ["Readings", "Voice", "Analysis"] as const;
 
 export function Lab() {
@@ -838,27 +1026,17 @@ export function Lab() {
       </header>
 
       {micStatus === "requesting" && (
-        <p role="status" className="mb-3 bg-raised px-3 py-2 text-[13px] text-ink">
-          Waiting for the browser&rsquo;s audio permission.
+        <p role="status" className="mb-3 flex items-center gap-2.5 bg-raised px-3 py-2.5 text-[13px] text-ink">
+          <span className="mark animate-pulse bg-accent!" aria-hidden />
+          Waiting for the browser&rsquo;s permission to access your microphone or tab audio…
         </p>
       )}
       {micError && (
-        <p role="alert" className="mb-3 bg-raised px-3 py-2 text-[13px] text-ink">
+        <p role="alert" className="mb-3 border border-accent/50 bg-raised px-3 py-2.5 text-[13px] text-ink">
           {micError}
         </p>
       )}
-      {sourceMode === "mic" && (
-        <p role="status" className="mb-3 flex items-center gap-2.5 bg-raised px-3 py-2 text-[13px] text-ink">
-          <span className="mark bg-accent!" aria-hidden />
-          Microphone on. Hold a vowel for a second or two; nothing you say is recorded or sent.
-        </p>
-      )}
-      {sourceMode === "stream" && (
-        <p role="status" className="mb-3 flex items-center gap-2.5 bg-raised px-3 py-2 text-[13px] text-ink">
-          <span className="mark bg-accent!" aria-hidden />
-          Tab / YouTube audio stream active. Click [ TRACE THIS SIGNAL ] at any moment to freeze a 512-sample voice slice and re-run it stage-by-stage.
-        </p>
-      )}
+      {(sourceMode === "mic" || sourceMode === "stream") && <LiveInputMonitor />}
 
       {traceOpen && <TraceInspector />}
 

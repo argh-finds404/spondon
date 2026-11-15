@@ -92,6 +92,14 @@ export function VowelInstrument() {
           <button type="button" className="btn" onClick={() => void setSourceMode(playing ? "silent" : "synth")}>
             {playing ? "Stop the sound" : "Play it aloud"}
           </button>
+          <button
+            type="button"
+            aria-pressed={sourceMode === "mic"}
+            className="btn"
+            onClick={() => void setSourceMode(sourceMode === "mic" ? "silent" : "mic")}
+          >
+            {sourceMode === "mic" ? "Stop microphone" : "Use microphone"}
+          </button>
           <Link href="/vowels" className="link t-small font-medium">
             The vowel atlas
           </Link>

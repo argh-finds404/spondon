@@ -64,7 +64,7 @@ describe("SPONDON lab runtime & asset integrity", () => {
     expect(useLabStore.getState().synth.tour).toBe(true);
   });
 
-  it("re-runs VoiceAnalyzer on the captured slice when parameters or stage bypass change while frozen", () => {
+  it("re-runs VoiceAnalyzer on the captured slice when parameters or stage bypass change while frozen", async () => {
     const ctrl = labRuntime.getController();
     expect(ctrl).not.toBeNull();
     if (!ctrl) return;
@@ -98,6 +98,16 @@ describe("SPONDON lab runtime & asset integrity", () => {
     store.toggleBypassStage(2);
     expect(useLabStore.getState().bypassedStage).toBe(2);
     expect(useLabStore.getState().analyzerOptions.preEmphasis).toBe(0);
+
+    // Switching source mode automatically unfreezes so live input is never stuck on a frozen slice
+    await store.setSourceMode("silent");
+    expect(useLabStore.getState().frozen).toBe(false);
+    expect(labRuntime.isFrozen()).toBe(false);
+
+    // Microphone input gain boost updates controller inputGain
+    store.setMicGain(5);
+    expect(useLabStore.getState().micGain).toBe(5);
+    expect(ctrl.inputGain).toBe(5);
 
     store.resetCalibration();
   });

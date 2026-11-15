@@ -64,8 +64,8 @@ export function createStageTraceBuffers(order = 12): StageTraceBuffers {
   };
 }
 
-const VOICED_MIN_DB = -50;
-const VOICED_MIN_CLARITY = 0.6;
+const VOICED_MIN_DB = -58;
+const VOICED_MIN_CLARITY = 0.5;
 const MEDIAN = 5;
 
 function nextPow2(n: number): number {

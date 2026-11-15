@@ -14,6 +14,9 @@ export interface LabState {
   sourceMode: SourceMode;
   micStatus: "idle" | "requesting" | "active" | "error";
   micError: string | null;
+  micDeviceLabel: string | null;
+  micGain: number;
+  autoCaptureArmed: boolean;
   frozen: boolean;
   traceOpen: boolean;
   traceStage: number;
@@ -28,6 +31,8 @@ export interface LabState {
   setActiveView: (view: LabView) => void;
   setShowNodalLines: (show: boolean) => void;
   setSourceMode: (mode: SourceMode) => Promise<void>;
+  setMicGain: (gain: number) => void;
+  setAutoCaptureArmed: (armed: boolean) => void;
   toggleFreeze: () => void;
   setTraceOpen: (open: boolean) => void;
   setTraceStage: (stage: number) => void;
@@ -152,6 +157,7 @@ class LabRuntime {
   private baselineOptions: AnalyzerOptions = { ...DEFAULT_ANALYZER_OPTIONS };
   private divider = 1;
   private frame = 0;
+  private armedVoicedStreak = 0;
 
   readonly trail: TrailBuffer = {
     f1: new Float32Array(TRAIL_CAPACITY),
@@ -166,7 +172,13 @@ class LabRuntime {
     if (!this.controller) {
       this.controller = new AudioController(DEFAULT_SYNTH, DEFAULT_ANALYZER_OPTIONS);
       this.controller.onStreamEnded = () => {
-        useLabStore.setState({ sourceMode: "silent", micStatus: "idle", micError: null });
+        useLabStore.setState({
+          sourceMode: "silent",
+          micStatus: "idle",
+          micError: null,
+          micDeviceLabel: null,
+          autoCaptureArmed: false,
+        });
         this.controller?.stop();
       };
     }
@@ -275,6 +287,20 @@ class LabRuntime {
           this.trail.head = (idx + 1) % TRAIL_CAPACITY;
           if (this.trail.count < TRAIL_CAPACITY) this.trail.count++;
         }
+        if (useLabStore.getState().autoCaptureArmed) {
+          if (t.voiced && t.stability.pitchConfidence >= 0.62 && t.formants.confidence >= 0.25 && t.formants.f1 > 0) {
+            if (++this.armedVoicedStreak >= 8) {
+              this.armedVoicedStreak = 0;
+              useLabStore.setState({ autoCaptureArmed: false });
+              useLabStore.getState().captureAndTrace();
+              return;
+            }
+          } else {
+            this.armedVoicedStreak = 0;
+          }
+        } else {
+          this.armedVoicedStreak = 0;
+        }
         if (skip) return;
         for (const cb of this.listeners) cb(t);
       });
@@ -297,6 +323,9 @@ export const useLabStore = create<LabState>((set, get) => ({
   sourceMode: "silent",
   micStatus: "idle",
   micError: null,
+  micDeviceLabel: null,
+  micGain: 2.5,
+  autoCaptureArmed: false,
   frozen: false,
   traceOpen: false,
   traceStage: 1,
@@ -316,24 +345,40 @@ export const useLabStore = create<LabState>((set, get) => ({
     const ctrl = labRuntime.getController();
     if (!ctrl) return;
 
+    // Always unfreeze and clear old trails when switching signal sources so live input is immediately visible.
+    labRuntime.setFrozen(false);
+    labRuntime.clearTrail();
+
     if (mode === "silent") {
       ctrl.stop();
-      set({ sourceMode: "silent", micStatus: "idle", micError: null });
+      set({
+        sourceMode: "silent",
+        micStatus: "idle",
+        micError: null,
+        micDeviceLabel: null,
+        autoCaptureArmed: false,
+        frozen: false,
+        bypassedStage: null,
+        recomputeCount: 0,
+      });
       return;
     }
 
     if (mode === "mic" || mode === "stream") {
-      set({ micStatus: "requesting", micError: null });
+      set({ micStatus: "requesting", micError: null, frozen: false, bypassedStage: null, recomputeCount: 0 });
     } else {
-      set({ micStatus: "idle", micError: null });
+      set({ micStatus: "idle", micError: null, micDeviceLabel: null, autoCaptureArmed: false, frozen: false, bypassedStage: null, recomputeCount: 0 });
     }
 
     try {
+      ctrl.setInputGain(get().micGain);
       await ctrl.start(mode);
       set({
         sourceMode: mode,
         micStatus: mode === "mic" || mode === "stream" ? "active" : "idle",
         micError: null,
+        micDeviceLabel: ctrl.deviceLabel,
+        frozen: false,
       });
     } catch (err) {
       ctrl.stop();
@@ -348,14 +393,32 @@ export const useLabStore = create<LabState>((set, get) => ({
         sourceMode: "silent",
         micStatus: mode === "mic" || mode === "stream" ? "error" : "idle",
         micError: mode === "mic" || mode === "stream" ? friendly : null,
+        micDeviceLabel: null,
+        autoCaptureArmed: false,
       });
+    }
+  },
+
+  setMicGain: (gain) => {
+    const clamped = Math.max(0.5, Math.min(12, gain));
+    const ctrl = labRuntime.getController();
+    if (ctrl) ctrl.setInputGain(clamped);
+    set({ micGain: clamped });
+  },
+
+  setAutoCaptureArmed: (autoCaptureArmed) => {
+    if (autoCaptureArmed && get().frozen) {
+      labRuntime.setFrozen(false);
+      set({ autoCaptureArmed: true, frozen: false, bypassedStage: null, recomputeCount: 0 });
+    } else {
+      set({ autoCaptureArmed });
     }
   },
 
   toggleFreeze: () => {
     const next = !get().frozen;
     labRuntime.setFrozen(next);
-    set({ frozen: next, bypassedStage: null });
+    set({ frozen: next, bypassedStage: null, autoCaptureArmed: false });
   },
 
   setTraceOpen: (traceOpen) => {
