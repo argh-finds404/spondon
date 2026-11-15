@@ -315,4 +315,68 @@ describe("analyser frame", () => {
     const analyzer = new VoiceAnalyzer(48000);
     expect(() => analyzer.process(new Float32Array(100), 0)).toThrow(/at least/);
   });
+
+  it("populates all 8 StageTraceBuffers accurately for a voiced frame", () => {
+    const signal = synthesizeVoice({
+      sampleRate: 48000,
+      f0Hz: 140,
+      durationSec: 0.5,
+      formants: [750, 1180, 2540],
+    });
+    const analyzer = new VoiceAnalyzer(48000);
+    const slice = signal.subarray(0, analyzer.rawSize);
+    const t = analyzer.process(slice, 42);
+    const sb = t.stageBuffers;
+
+    expect(sb.rawDecimated.length).toBe(512);
+    expect(sb.preEmphasized.length).toBe(512);
+    expect(sb.windowWeights.length).toBe(512);
+    expect(sb.windowed.length).toBe(512);
+    expect(sb.nsdfCurve.length).toBe(256);
+    expect(sb.peakLagTau).toBeGreaterThan(75);
+    expect(sb.peakLagTau).toBeLessThan(95);
+    expect(sb.autocorrCoeffs.length).toBe(analyzer.options.lpcOrder + 1);
+    expect(sb.lpcCoeffs.length).toBe(analyzer.options.lpcOrder);
+    expect(sb.lpcGain).toBeGreaterThan(0);
+    expect(sb.allPoles.length).toBeGreaterThan(0);
+
+    for (let i = 0; i < 512; i++) {
+      expect(sb.windowed[i]).toBeCloseTo(sb.preEmphasized[i] * sb.windowWeights[i], 5);
+    }
+    const roles = sb.allPoles.map((p) => p.selectedAs).filter(Boolean);
+    expect(roles).toContain("F1");
+    expect(roles).toContain("F2");
+  });
+
+  it("reprocessCapturedBuffer deterministically re-runs a single captured slice with different overrides", () => {
+    const signal = synthesizeVoice({
+      sampleRate: 48000,
+      f0Hz: 140,
+      durationSec: 0.5,
+      formants: [750, 1180, 2540],
+    });
+    const analyzer = new VoiceAnalyzer(48000);
+    const slice = new Float32Array(signal.subarray(4096, 4096 + analyzer.rawSize));
+
+    const baseline = analyzer.reprocessCapturedBuffer(slice, 48000, {
+      windowType: "hamming",
+      preEmphasis: 0.97,
+      lpcOrder: 12,
+    });
+    const rectNoPreOrder20 = analyzer.reprocessCapturedBuffer(slice, 48000, {
+      windowType: "rectangular",
+      preEmphasis: 0,
+      lpcOrder: 20,
+    });
+
+    // Same rawDecimated input slice, different intermediate & output stages
+    expect(Array.from(rectNoPreOrder20.stageBuffers.rawDecimated)).toEqual(
+      Array.from(baseline.stageBuffers.rawDecimated),
+    );
+    expect(baseline.stageBuffers.windowWeights[0]).toBeCloseTo(0.08, 4);
+    expect(rectNoPreOrder20.stageBuffers.windowWeights[0]).toBeCloseTo(1.0, 4);
+    expect(baseline.stageBuffers.lpcCoeffs.length).toBe(12);
+    expect(rectNoPreOrder20.stageBuffers.lpcCoeffs.length).toBe(20);
+    expect(rectNoPreOrder20.lpcEnvelopeDb[40]).not.toBeCloseTo(baseline.lpcEnvelopeDb[40], 2);
+  });
 });

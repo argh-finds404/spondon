@@ -14,6 +14,8 @@ interface TraceProps {
   bare?: boolean;
   /** Show a readout under the pointer. */
   inspect?: boolean;
+  /** Overlay the original frozen baseline telemetry when frozen parameters are modified. */
+  compareBaseline?: boolean;
   /** Vowel chart only: called with the target under a click. */
   onPick?: (vowelId: string) => void;
 }
@@ -22,19 +24,25 @@ interface TraceProps {
  * One live canvas of the instrument. It draws from the shared telemetry object on the
  * engine's own animation frame, only while it is on screen, and never touches React state.
  */
-export function Trace({ kind, label, className, bare = false, inspect = false, onPick }: TraceProps) {
+export function Trace({ kind, label, className, bare = false, inspect = false, compareBaseline = false, onPick }: TraceProps) {
   const boxRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hoverRef = useRef<HTMLOutputElement>(null);
   const stateRef = useRef(createDrawState());
   const kindRef = useRef(kind);
+  const compareRef = useRef(compareBaseline);
   const targetId = useLabStore((s) => s.targetId);
+  const frozen = useLabStore((s) => s.frozen);
+  const recomputeCount = useLabStore((s) => s.recomputeCount);
 
   useEffect(() => {
     kindRef.current = kind;
+    compareRef.current = compareBaseline;
     stateRef.current.bare = bare;
     stateRef.current.targetId = targetId;
-  }, [kind, bare, targetId]);
+    stateRef.current.baseline =
+      compareBaseline && frozen && recomputeCount > 0 ? labRuntime.getBaselineTelemetry() : null;
+  }, [kind, bare, targetId, compareBaseline, frozen, recomputeCount]);
 
   useEffect(() => {
     const box = boxRef.current;

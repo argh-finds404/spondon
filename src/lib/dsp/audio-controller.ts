@@ -7,8 +7,10 @@ import { findVowel } from "./vowel-targets";
  * silent: the synthetic voice is analysed straight from its buffer; no AudioContext, no sound.
  * synth:  the same buffer is played through Web Audio and read back from an AnalyserNode.
  * mic:    the microphone feeds that AnalyserNode instead. Nothing is recorded or sent anywhere.
+ * stream: a shared browser tab / YouTube / music stream feeds that AnalyserNode (video track stopped immediately).
  */
-export type SourceMode = "silent" | "synth" | "mic";
+export type SourceMode = "silent" | "synth" | "mic" | "stream";
+export type AudioSourceMode = SourceMode;
 
 export interface SynthSettings {
   vowelId: string;
@@ -41,6 +43,7 @@ export class AudioController {
   settings: SynthSettings;
   analyzer: VoiceAnalyzer;
   volume = 0.4;
+  onStreamEnded: (() => void) | null = null;
 
   private raw: Float32Array<ArrayBuffer>;
   private loop: Float32Array<ArrayBuffer> = new Float32Array(0);
@@ -62,6 +65,18 @@ export class AudioController {
 
   get telemetry(): DSPFrameTelemetry {
     return this.analyzer.telemetry;
+  }
+
+  /** Return the raw PCM slice of the most recent frame (or seed one from the synth loop if none ran yet). */
+  getCurrentRawSlice(): Float32Array {
+    if (!this.analyzer.hasCapturedRaw() && this.loop.length > 0) {
+      const length = this.loop.length;
+      for (let k = 0; k < this.raw.length; k++) {
+        this.raw[k] = this.loop[k % length];
+      }
+      this.analyzer.process(this.raw, 0);
+    }
+    return this.analyzer.getLastRawInput();
   }
 
   /** Frames are produced only while someone is listening. */
@@ -98,8 +113,8 @@ export class AudioController {
     if (this.out && this.ctx) this.out.gain.setTargetAtTime(volume, this.ctx.currentTime, 0.02);
   }
 
-  /** Must be called from a user gesture: browsers only start audio, or ask for the microphone, on one. */
-  async start(mode: "synth" | "mic"): Promise<void> {
+  /** Must be called from a user gesture: browsers only start audio, or ask for the microphone/tab, on one. */
+  async start(mode: "synth" | "mic" | "stream"): Promise<void> {
     this.release();
     const ctx = new AudioContext();
     this.ctx = ctx;
@@ -109,6 +124,24 @@ export class AudioController {
         this.stream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
         });
+      } else if (mode === "stream") {
+        if (!navigator.mediaDevices?.getDisplayMedia) {
+          throw new Error("Tab audio capture is not supported in this browser.");
+        }
+        const displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } as MediaTrackConstraints,
+        });
+        const audioTrack = displayStream.getAudioTracks()[0];
+        displayStream.getVideoTracks().forEach((t) => t.stop());
+        if (!audioTrack) {
+          displayStream.getTracks().forEach((t) => t.stop());
+          throw new Error("Enable 'Share tab audio' in the browser picker to analyze YouTube or music streams.");
+        }
+        audioTrack.addEventListener("ended", () => {
+          this.onStreamEnded?.();
+        });
+        this.stream = new MediaStream([audioTrack]);
       }
       await ctx.resume();
       this.useRate(ctx.sampleRate);
@@ -116,8 +149,8 @@ export class AudioController {
       const analyser = ctx.createAnalyser();
       analyser.fftSize = this.analyzer.rawSize;
       this.analyser = analyser;
-      if (mode === "mic" && this.stream) {
-        // Analysed, never routed to the speakers.
+      if ((mode === "mic" || mode === "stream") && this.stream) {
+        // Analysed, never routed to the speakers (prevents double-echo).
         ctx.createMediaStreamSource(this.stream).connect(analyser);
       } else {
         this.out = ctx.createGain();

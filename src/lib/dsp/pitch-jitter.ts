@@ -6,6 +6,8 @@ export interface PitchResult {
   f0Hz: number;
   /** NSDF value at the chosen peak, 0..1. */
   confidence: number;
+  /** Refined fundamental period lag τ in samples (0 when none). */
+  lagTau?: number;
 }
 
 const scratch = new Map<number, { nsdf: Float32Array; prefix: Float64Array }>();
@@ -17,13 +19,16 @@ const scratch = new Map<number, { nsdf: Float32Array; prefix: Float64Array }>();
 export function detectPitchF0(
   buffer: Float32Array,
   sampleRate: number,
-  out: PitchResult = { f0Hz: 0, confidence: 0 },
+  out: PitchResult = { f0Hz: 0, confidence: 0, lagTau: 0 },
+  nsdfOut?: Float32Array,
 ): PitchResult {
   const n = buffer.length;
   const minLag = Math.max(2, Math.floor(sampleRate / PITCH_RANGE_HZ[1]));
   const maxLag = Math.min(Math.ceil(sampleRate / PITCH_RANGE_HZ[0]), (n >> 1) - 1);
   out.f0Hz = 0;
   out.confidence = 0;
+  out.lagTau = 0;
+  if (nsdfOut) nsdfOut.fill(0);
   if (maxLag <= minLag) return out;
 
   let s = scratch.get(n);
@@ -37,6 +42,10 @@ export function detectPitchF0(
     for (let j = 0; j < n - tau; j++) r += buffer[j] * buffer[j + tau];
     const m = prefix[n - tau] + prefix[n] - prefix[tau];
     nsdf[tau] = m > 0 ? (2 * r) / m : 0;
+  }
+  if (nsdfOut) {
+    const copyLen = Math.min(nsdfOut.length, maxLag + 2);
+    for (let tau = 0; tau < copyLen; tau++) nsdfOut[tau] = nsdf[tau];
   }
 
   // Leave the lobe around lag 0, then collect the highest point of each positive lobe.
@@ -75,7 +84,9 @@ export function detectPitchF0(
   const y2 = nsdf[pick + 1];
   const denom = y0 - 2 * y1 + y2;
   const shift = denom !== 0 ? (0.5 * (y0 - y2)) / denom : 0;
-  out.f0Hz = sampleRate / (pick + shift);
+  const refinedTau = pick + shift;
+  out.lagTau = refinedTau;
+  out.f0Hz = sampleRate / refinedTau;
   out.confidence = Math.min(1, y1 - 0.25 * (y0 - y2) * shift);
   return out;
 }

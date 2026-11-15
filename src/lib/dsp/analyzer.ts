@@ -1,4 +1,4 @@
-import type { DSPFrameTelemetry, VowelTarget, WindowType } from "@/types/dsp";
+import type { DSPFrameTelemetry, StageTraceBuffers, VowelTarget, WindowType } from "@/types/dsp";
 import {
   computeAutocorrelation,
   computeRadix2FFT,
@@ -17,6 +17,8 @@ import { getWindow } from "./windows";
 /** Samples in the spectral frame, after decimation. */
 export const FRAME_SIZE = 512;
 export const FFT_SIZE = 1024;
+/** Lags of the McLeod NSDF curve retained for stage inspection. */
+export const NSDF_TRACE_SIZE = 256;
 /** Decimated samples kept for pitch detection: two spectral frames. */
 const PITCH_SIZE = 1024;
 /** Decimation aims for this rate: Nyquist of 6 kHz holds F1 to F3 with room to spare. */
@@ -29,11 +31,38 @@ export interface AnalyzerOptions {
   lpcOrder: number;
 }
 
+export type AnalysisConfig = Partial<AnalyzerOptions> & {
+  target?: VowelTarget;
+};
+
 export const DEFAULT_ANALYZER_OPTIONS: AnalyzerOptions = {
   windowType: "hamming",
   preEmphasis: 0.97,
   lpcOrder: 12,
 };
+
+export function createStageTraceBuffers(order = 12): StageTraceBuffers {
+  return {
+    rawDecimated: new Float32Array(FRAME_SIZE),
+    preEmphasized: new Float32Array(FRAME_SIZE),
+    windowWeights: new Float32Array(FRAME_SIZE),
+    windowed: new Float32Array(FRAME_SIZE),
+    nsdfCurve: new Float32Array(NSDF_TRACE_SIZE),
+    peakLagTau: 0,
+    autocorrCoeffs: new Array<number>(order + 1).fill(0),
+    lpcCoeffs: new Array<number>(order).fill(0),
+    lpcGain: 0,
+    allPoles: Array.from({ length: order }, () => ({
+      re: 0,
+      im: 0,
+      radius: 0,
+      anglePi: 0,
+      freqHz: 0,
+      bandwidthHz: 0,
+      selectedAs: null,
+    })),
+  };
+}
 
 const VOICED_MIN_DB = -50;
 const VOICED_MIN_CLARITY = 0.6;
@@ -81,6 +110,8 @@ export class VoiceAnalyzer {
   readonly telemetry: DSPFrameTelemetry;
 
   private readonly fir: Float32Array;
+  private readonly lastRaw: Float32Array;
+  private hasLastRaw = false;
   private readonly dec = new Float32Array(PITCH_SIZE);
   private readonly pre = new Float32Array(FRAME_SIZE);
   private readonly frame = new Float32Array(FRAME_SIZE);
@@ -89,7 +120,7 @@ export class VoiceAnalyzer {
   private R = new Float64Array(0);
   private lpc: LPCResult = createLPCResult(0);
   private poles: PoleAnalysis = createPoleAnalysis(0);
-  private readonly pitch: PitchResult = { f0Hz: 0, confidence: 0 };
+  private readonly pitch: PitchResult = { f0Hz: 0, confidence: 0, lagTau: 0 };
   private readonly cycles: CycleStats = { jitterPercent: 0, shimmerDb: 0, cycles: 0 };
   private readonly tracker = new StabilityTracker();
   private readonly history = new Float32Array(3 * MEDIAN);
@@ -105,6 +136,7 @@ export class VoiceAnalyzer {
     this.fir = this.decimation > 1 ? designDecimator(this.decimation) : new Float32Array(0);
     this.minSamples = PITCH_SIZE * this.decimation + this.fir.length;
     this.rawSize = nextPow2(this.minSamples);
+    this.lastRaw = new Float32Array(this.rawSize);
     this.options = { ...DEFAULT_ANALYZER_OPTIONS, ...options };
     this.telemetry = {
       timestampMs: 0,
@@ -135,8 +167,17 @@ export class VoiceAnalyzer {
         convergenceScore: 0,
         guidance: GUIDANCE.silent,
       },
+      stageBuffers: createStageTraceBuffers(this.options.lpcOrder),
     };
     this.ensureOrder();
+  }
+
+  getLastRawInput(): Float32Array {
+    return this.lastRaw;
+  }
+
+  hasCapturedRaw(): boolean {
+    return this.hasLastRaw;
   }
 
   private ensureOrder(): void {
@@ -148,6 +189,17 @@ export class VoiceAnalyzer {
     this.poles = createPoleAnalysis(order);
     this.telemetry.lpcCoefficients = new Array<number>(order).fill(0);
     this.telemetry.zPlanePoles = this.poles.poles;
+    this.telemetry.stageBuffers.autocorrCoeffs = new Array<number>(order + 1).fill(0);
+    this.telemetry.stageBuffers.lpcCoeffs = new Array<number>(order).fill(0);
+    this.telemetry.stageBuffers.allPoles = Array.from({ length: order }, () => ({
+      re: 0,
+      im: 0,
+      radius: 0,
+      anglePi: 0,
+      freqHz: 0,
+      bandwidthHz: 0,
+      selectedAs: null,
+    }));
   }
 
   /** Low-pass and keep every Nth sample, ending at the newest input that has full filter support. */
@@ -181,13 +233,19 @@ export class VoiceAnalyzer {
       throw new Error(`VoiceAnalyzer needs at least ${this.minSamples} samples, got ${raw.length}`);
     }
     this.ensureOrder();
+    const copyLen = Math.min(raw.length, this.lastRaw.length);
+    this.lastRaw.set(raw.subarray(raw.length - copyLen), this.lastRaw.length - copyLen);
+    this.hasLastRaw = true;
+
     const t = this.telemetry;
+    const sb = t.stageBuffers;
     const { dec, pre, frame, re, im, options } = this;
     const order = options.lpcOrder;
     t.timestampMs = timestampMs;
     t.windowType = options.windowType;
 
     this.decimate(raw);
+    sb.rawDecimated.set(dec.subarray(PITCH_SIZE - FRAME_SIZE));
     let mean = 0;
     for (let i = 0; i < PITCH_SIZE; i++) mean += dec[i];
     mean /= PITCH_SIZE;
@@ -206,17 +264,20 @@ export class VoiceAnalyzer {
     st.rmsDb = 20 * Math.log10(rms + 1e-9);
     st.zeroCrossingRate = crossings / (FRAME_SIZE - 1);
 
-    detectPitchF0(dec, this.analysisRate, this.pitch);
+    detectPitchF0(dec, this.analysisRate, this.pitch, sb.nsdfCurve);
     st.pitchConfidence = this.pitch.confidence;
     const voiced = st.rmsDb > VOICED_MIN_DB && this.pitch.f0Hz > 0 && this.pitch.confidence >= VOICED_MIN_CLARITY;
     t.voiced = voiced;
     st.f0Hz = voiced ? this.pitch.f0Hz : 0;
+    sb.peakLagTau = voiced ? (this.pitch.lagTau ?? 0) : 0;
 
     // x[n] * w[n] for the scope; the spectral chain windows the pre-emphasised copy.
     const { w, sum: windowSum } = getWindow(options.windowType, FRAME_SIZE);
     const alpha = options.preEmphasis;
     pre[0] = x[0] * (1 - alpha);
     for (let i = 1; i < FRAME_SIZE; i++) pre[i] = x[i] - alpha * x[i - 1];
+    sb.preEmphasized.set(pre);
+    sb.windowWeights.set(w);
     re.fill(0);
     im.fill(0);
     for (let i = 0; i < FRAME_SIZE; i++) {
@@ -224,6 +285,7 @@ export class VoiceAnalyzer {
       frame[i] = pre[i] * w[i];
       re[i] = frame[i];
     }
+    sb.windowed.set(frame);
 
     // 0 dB is a full-scale sinusoid: its windowed DFT peak is sum(w) / 2.
     const refDb = -20 * Math.log10(windowSum / 2);
@@ -233,6 +295,7 @@ export class VoiceAnalyzer {
     }
 
     computeAutocorrelation(frame, order, this.R);
+    for (let i = 0; i <= order; i++) sb.autocorrCoeffs[i] = this.R[i];
     const hasSignal = this.R[0] > 1e-10;
     if (hasSignal) {
       // A trace of white noise (-60 dB) keeps the normal equations well conditioned.
@@ -240,13 +303,39 @@ export class VoiceAnalyzer {
       solveLevinsonDurbin(this.R, order, this.lpc);
       evaluateLPCEnvelopeDb(this.lpc.a, this.lpc.gain, FRAME_SIZE, t.lpcEnvelopeDb, refDb);
       extractFormantsAndPoles(this.lpc.a, this.analysisRate, this.poles);
-      for (let i = 0; i < order; i++) t.lpcCoefficients[i] = this.lpc.a[i];
+      sb.lpcGain = this.lpc.gain;
+      for (let i = 0; i < order; i++) {
+        t.lpcCoefficients[i] = this.lpc.a[i];
+        sb.lpcCoeffs[i] = this.lpc.a[i];
+        const srcPole = this.poles.poles[i];
+        const dstPole = sb.allPoles[i];
+        dstPole.re = srcPole.re;
+        dstPole.im = srcPole.im;
+        dstPole.radius = srcPole.magnitude;
+        dstPole.anglePi = srcPole.angleRad / Math.PI;
+        dstPole.freqHz = srcPole.freqHz;
+        dstPole.bandwidthHz = srcPole.bandwidthHz;
+        dstPole.selectedAs =
+          srcPole.formantIndex === 1
+            ? "F1"
+            : srcPole.formantIndex === 2
+              ? "F2"
+              : srcPole.formantIndex === 3
+                ? "F3"
+                : null;
+      }
     } else {
       t.lpcEnvelopeDb.fill(-120);
       t.lpcCoefficients.fill(0);
-      for (const pole of this.poles.poles) {
+      sb.lpcCoeffs.fill(0);
+      sb.lpcGain = 0;
+      for (let i = 0; i < order; i++) {
+        const pole = this.poles.poles[i];
         pole.re = pole.im = pole.magnitude = pole.angleRad = pole.freqHz = 0;
         pole.formantIndex = 0;
+        const dstPole = sb.allPoles[i];
+        dstPole.re = dstPole.im = dstPole.radius = dstPole.anglePi = dstPole.freqHz = dstPole.bandwidthHz = 0;
+        dstPole.selectedAs = null;
       }
     }
 
@@ -269,7 +358,7 @@ export class VoiceAnalyzer {
       f.b1 += (found.b1 - f.b1) * k;
       f.b2 += (found.b2 - f.b2) * k;
       if (found.f3 > 0) f.b3 += (found.b3 - f.b3) * k;
-      f.confidence += (found.confidence - f.confidence) * 0.4;
+      f.confidence += (found.confidence - f.confidence) * k;
     } else {
       f.confidence *= 0.85;
       if (++this.unvoicedFrames > 12) {
@@ -301,5 +390,33 @@ export class VoiceAnalyzer {
       m.guidance = GUIDANCE.silent;
     }
     return t;
+  }
+
+  /**
+   * Re-run the full DSP pipeline on a single captured raw PCM buffer with overridden
+   * analysis parameters (windowType, preEmphasis, lpcOrder, target), without mutating this
+   * analyser's live state.
+   */
+  reprocessCapturedBuffer(
+    rawInputPcm: Float32Array,
+    sampleRate: number = this.sampleRate,
+    overrides: AnalysisConfig = {},
+  ): DSPFrameTelemetry {
+    const mergedOptions: AnalyzerOptions = {
+      windowType: overrides.windowType ?? this.options.windowType,
+      preEmphasis: overrides.preEmphasis ?? this.options.preEmphasis,
+      lpcOrder: overrides.lpcOrder ?? this.options.lpcOrder,
+    };
+    const isolated = new VoiceAnalyzer(sampleRate, mergedOptions);
+    isolated.target = overrides.target ?? this.target;
+    let input = rawInputPcm;
+    if (input.length < isolated.minSamples) {
+      const padded = new Float32Array(isolated.rawSize);
+      if (input.length > 0) {
+        for (let i = 0; i < padded.length; i++) padded[i] = input[i % input.length];
+      }
+      input = padded;
+    }
+    return isolated.process(input, this.telemetry.timestampMs);
   }
 }

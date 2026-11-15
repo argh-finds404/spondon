@@ -30,11 +30,17 @@ export type TraceKind =
   | "mini"
   | "voice"
   | "samples"
+  | "rawDecimated"
+  | "preEmphasized"
+  | "windowed"
   | "window"
   | "scope"
   | "pitch"
+  | "nsdf"
   | "fft"
+  | "fftHarmonics"
   | "lpc"
+  | "lpcCoeffs"
   | "formants"
   | "spectrum"
   | "zplane"
@@ -65,6 +71,8 @@ export interface DrawState {
   peak: number;
   modes: Modes;
   trail: TrailView | null;
+  /** Optional frozen baseline telemetry for side-by-side BEFORE vs AFTER overlay. */
+  baseline: DSPFrameTelemetry | null;
   /** Filled by the draw function while the pointer is over the plot. */
   hover: string;
 }
@@ -83,6 +91,7 @@ export function createDrawState(): DrawState {
     peak: 0.05,
     modes: { m: 2.8, n: 5.6 },
     trail: null,
+    baseline: null,
     hover: "",
   };
 }
@@ -167,7 +176,7 @@ const drawVoice: DrawFn = (ctx, s, t) => {
 };
 
 const drawSamples: DrawFn = (ctx, s, t) => {
-  const x = t.timeDomainRaw;
+  const x = t.stageBuffers.rawDecimated.length ? t.stageBuffers.rawDecimated : t.timeDomainRaw;
   const count = Math.max(24, Math.min(96, Math.floor(s.w / 7)));
   const from = triggerIndex(x, periodOf(t), count);
   const mid = s.h / 2;
@@ -187,6 +196,94 @@ const drawSamples: DrawFn = (ctx, s, t) => {
   for (let i = 0; i < count; i++) {
     const px = Math.round(step * (i + 0.5));
     ctx.fillRect(px - 1.5, mid - x[from + i] * gain - 1.5, 4, 4);
+  }
+};
+
+/** Stage 2 input: 512 decimated samples before DC removal and pre-emphasis. */
+const drawRawDecimated: DrawFn = (ctx, s, t) => {
+  const x = t.stageBuffers.rawDecimated;
+  const n = x.length;
+  const padL = s.bare ? 0 : 8;
+  const w = s.w - padL * 2;
+  const mid = s.h / 2;
+  const gain = (s.h * 0.42) / followPeak(s, x);
+  baseline(ctx, padL, w, mid);
+  ctx.strokeStyle = INK.ink;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
+  wave(ctx, x, 0, n, padL, w, mid, gain);
+  if (s.px >= padL && s.px <= padL + w && s.py >= 0) {
+    const idx = Math.min(n - 1, Math.max(0, Math.round(((s.px - padL) / w) * (n - 1))));
+    s.hover = `n = ${idx} · x[n] = ${x[idx].toFixed(4)}`;
+  } else {
+    s.hover = "";
+  }
+};
+
+/** Stage 2 output / Stage 3 input: pre-emphasized y[n] = x[n] − α·x[n−1] over faint rawDecimated. */
+const drawPreEmphasized: DrawFn = (ctx, s, t) => {
+  const raw = t.stageBuffers.rawDecimated;
+  const pre = t.stageBuffers.preEmphasized;
+  const n = pre.length;
+  const padL = s.bare ? 0 : 8;
+  const w = s.w - padL * 2;
+  const mid = s.h / 2;
+  const gain = (s.h * 0.42) / followPeak(s, raw);
+  baseline(ctx, padL, w, mid);
+  ctx.strokeStyle = INK.inkFaint;
+  ctx.lineWidth = 1;
+  wave(ctx, raw, 0, n, padL, w, mid, gain);
+  ctx.strokeStyle = INK.lpc;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
+  wave(ctx, pre, 0, n, padL, w, mid, gain);
+  if (s.px >= padL && s.px <= padL + w && s.py >= 0) {
+    const idx = Math.min(n - 1, Math.max(0, Math.round(((s.px - padL) / w) * (n - 1))));
+    s.hover = `n = ${idx} · x[n] = ${raw[idx].toFixed(4)} → y[n] = ${pre[idx].toFixed(4)}`;
+  } else {
+    s.hover = "";
+  }
+};
+
+/** Stage 3 output / Stage 4 input: windowed xw[n] = y[n]·w[n] with active w[n] envelope. */
+const drawWindowed: DrawFn = (ctx, s, t) => {
+  const pre = t.stageBuffers.preEmphasized;
+  const win = t.stageBuffers.windowed;
+  const weights = t.stageBuffers.windowWeights;
+  const n = win.length;
+  const padL = s.bare ? 0 : 8;
+  const w = s.w - padL * 2;
+  const mid = s.h / 2;
+  const amp = s.h * 0.42;
+  const gain = amp / followPeak(s, pre);
+  baseline(ctx, padL, w, mid);
+
+  const table = weights.length === n ? weights : getWindow(t.windowType, n).w;
+  ctx.setLineDash([3, 4]);
+  ctx.strokeStyle = INK.mutedSoft;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < n; i += 4) {
+    const px = padL + (i / (n - 1)) * w;
+    if (i === 0) ctx.moveTo(px, mid - table[i] * amp);
+    else ctx.lineTo(px, mid - table[i] * amp);
+  }
+  for (let i = n - 1; i >= 0; i -= 4) ctx.lineTo(padL + (i / (n - 1)) * w, mid + table[i] * amp);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = INK.inkFaint;
+  ctx.lineWidth = 1;
+  wave(ctx, pre, 0, n, padL, w, mid, gain);
+  ctx.strokeStyle = INK.ink;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
+  wave(ctx, win, 0, n, padL, w, mid, gain);
+  if (s.px >= padL && s.px <= padL + w && s.py >= 0) {
+    const idx = Math.min(n - 1, Math.max(0, Math.round(((s.px - padL) / w) * (n - 1))));
+    s.hover = `n = ${idx} · w[n] = ${table[idx].toFixed(3)} · xw[n] = ${win[idx].toFixed(4)}`;
+  } else {
+    s.hover = "";
   }
 };
 
@@ -261,6 +358,82 @@ const drawPitch: DrawFn = (ctx, s, t) => {
   }
 };
 
+/** Stage 5 output: McLeod Pitch Method NSDF curve n(τ) across lags τ = 0..255. */
+const drawNsdf: DrawFn = (ctx, s, t) => {
+  const nsdf = t.stageBuffers.nsdfCurve;
+  const lags = nsdf.length;
+  const padL = s.bare ? 0 : 32;
+  const padR = s.bare ? 0 : 10;
+  const padT = s.bare ? 6 : 14;
+  const padB = s.bare ? 6 : 22;
+  const w = s.w - padL - padR;
+  const h = s.h - padT - padB;
+  const mid = padT + h / 2;
+  const amp = h * 0.45;
+
+  baseline(ctx, padL, w, mid);
+  if (!s.bare) {
+    ctx.font = s.font;
+    ctx.fillStyle = INK.muted;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillText("+1.0", padL - 6, mid - amp);
+    ctx.fillText("0.0", padL - 6, mid);
+    ctx.fillText("−1.0", padL - 6, mid + amp);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText("τ = 0", padL, padT + h + 6);
+    ctx.textAlign = "center";
+    ctx.fillText("128", padL + w * 0.5, padT + h + 6);
+    ctx.textAlign = "right";
+    ctx.fillText("255 samples", padL + w, padT + h + 6);
+  }
+
+  ctx.strokeStyle = INK.lpc;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  for (let tau = 0; tau < lags; tau++) {
+    const px = padL + (tau / (lags - 1)) * w;
+    const py = mid - Math.max(-1, Math.min(1, nsdf[tau])) * amp;
+    if (tau === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+
+  const peakTau = t.stageBuffers.peakLagTau;
+  if (peakTau > 0 && peakTau < lags) {
+    const px = padL + (peakTau / (lags - 1)) * w;
+    const tauIdx = Math.min(lags - 1, Math.round(peakTau));
+    const py = mid - Math.max(-1, Math.min(1, nsdf[tauIdx])) * amp;
+    ctx.strokeStyle = INK.accent;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.moveTo(Math.round(px) + 0.5, padT);
+    ctx.lineTo(Math.round(px) + 0.5, padT + h);
+    ctx.stroke();
+    ctx.fillStyle = INK.accent;
+    ctx.beginPath();
+    ctx.arc(px, py, 4, 0, Math.PI * 2);
+    ctx.fill();
+    if (!s.bare) {
+      ctx.font = s.fontStrong;
+      ctx.textAlign = px > padL + w * 0.65 ? "right" : "left";
+      ctx.textBaseline = "top";
+      const labelX = px > padL + w * 0.65 ? px - 6 : px + 6;
+      ctx.fillText(`τ = ${peakTau.toFixed(1)} → ${Math.round(t.stability.f0Hz)} Hz`, labelX, padT + 2);
+    }
+  }
+
+  if (s.px >= padL && s.px <= padL + w && s.py >= 0) {
+    const tau = Math.min(lags - 1, Math.max(0, Math.round(((s.px - padL) / w) * (lags - 1))));
+    const hz = tau > 0 ? Math.round(t.analysisRate / tau) : 0;
+    s.hover = `τ = ${tau} samples · NSDF ${nsdf[tau].toFixed(3)}${hz > 0 ? ` · ${hz} Hz` : ""}`;
+  } else {
+    s.hover = "";
+  }
+};
+
 /* ── Frequency domain ─────────────────────────────────────────────── */
 
 const MIN_DB = -100;
@@ -313,6 +486,21 @@ function spectrum(ctx: Ctx, s: DrawState, t: DSPFrameTelemetry, fft: boolean, lp
   ctx.beginPath();
   ctx.rect(padL, padT, w, h);
   ctx.clip();
+
+  if (s.baseline && s.baseline !== t) {
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = INK.mutedSoft;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    const baseArr = lpc ? s.baseline.lpcEnvelopeDb : s.baseline.fftMagnitudeDb;
+    for (let b = 0; b < bins; b++) {
+      const y = padT + (MAX_DB - baseArr[b]) * yScale;
+      if (b === 0) ctx.moveTo(padL, y);
+      else ctx.lineTo(padL + (b / (bins - 1)) * w, y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   if (fft) {
     ctx.strokeStyle = lpc ? INK.inkSoft : INK.ink;
@@ -386,6 +574,134 @@ function spectrum(ctx: Ctx, s: DrawState, t: DSPFrameTelemetry, fft: boolean, lp
   }
 }
 
+const HARMONIC_LABELS = ["", "▲ F0", "▲ 2·F0", "▲ 3·F0"] as const;
+
+/** Stage 4 output: 1024-pt FFT magnitude spectrum with harmonic peak markers (F0, 2·F0, 3·F0). */
+const drawFftHarmonics: DrawFn = (ctx, s, t) => {
+  spectrum(ctx, s, t, true, false, false);
+  const f0 = t.stability.f0Hz;
+  if (!t.voiced || f0 <= 0) return;
+
+  const padL = s.bare ? 0 : 36;
+  const padR = s.bare ? 0 : 8;
+  const padT = s.bare ? 4 : 10;
+  const padB = s.bare ? 0 : 22;
+  const w = s.w - padL - padR;
+  const h = s.h - padT - padB;
+  const nyquist = t.analysisRate / 2;
+  const bins = t.fftMagnitudeDb.length;
+  const yScale = h / (MAX_DB - MIN_DB);
+
+  ctx.save();
+  ctx.font = s.fontStrong;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  ctx.fillStyle = INK.accent;
+  ctx.strokeStyle = INK.accentSoft;
+  ctx.lineWidth = 1;
+
+  for (let k = 1; k <= 3; k++) {
+    const targetHz = k * f0;
+    if (targetHz >= nyquist) break;
+    const centerBin = Math.round((targetHz / nyquist) * (bins - 1));
+    let bestBin = centerBin;
+    let bestDb = -Infinity;
+    const lo = Math.max(1, centerBin - 3);
+    const hi = Math.min(bins - 1, centerBin + 3);
+    for (let b = lo; b <= hi; b++) {
+      if (t.fftMagnitudeDb[b] > bestDb) {
+        bestDb = t.fftMagnitudeDb[b];
+        bestBin = b;
+      }
+    }
+    const hx = padL + (bestBin / (bins - 1)) * w;
+    const hy = Math.max(padT + 14, padT + (MAX_DB - bestDb) * yScale);
+    ctx.beginPath();
+    ctx.moveTo(Math.round(hx) + 0.5, padT + h);
+    ctx.lineTo(Math.round(hx) + 0.5, hy);
+    ctx.stroke();
+    ctx.fillText(HARMONIC_LABELS[k], hx, hy - 3);
+  }
+  ctx.restore();
+};
+
+/** Stage 7 input: LPC predictor coefficients a[1..p] and normalized autocorrelation lags R[1..p]/R[0]. */
+const drawLpcCoeffs: DrawFn = (ctx, s, t) => {
+  const a = t.stageBuffers.lpcCoeffs;
+  const r = t.stageBuffers.autocorrCoeffs;
+  const p = a.length;
+  const padL = s.bare ? 12 : 34;
+  const padR = s.bare ? 12 : 14;
+  const padT = s.bare ? 10 : 16;
+  const padB = s.bare ? 10 : 24;
+  const w = s.w - padL - padR;
+  const h = s.h - padT - padB;
+  const mid = padT + h / 2;
+
+  let maxAbs = 1;
+  for (let i = 0; i < p; i++) {
+    const abs = Math.abs(a[i]);
+    if (abs > maxAbs) maxAbs = abs;
+  }
+  const scale = (h * 0.44) / maxAbs;
+
+  baseline(ctx, padL, w, mid);
+  if (!s.bare) {
+    ctx.font = s.font;
+    ctx.fillStyle = INK.muted;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`+${maxAbs.toFixed(1)}`, padL - 6, padT + h * 0.06);
+    ctx.fillText("0", padL - 6, mid);
+    ctx.fillText(`−${maxAbs.toFixed(1)}`, padL - 6, padT + h * 0.94);
+  }
+
+  if (p === 0) return;
+  const step = w / p;
+  const r0 = r.length > 0 && r[0] > 0 ? r[0] : 1;
+
+  for (let k = 0; k < p; k++) {
+    const cx = padL + step * (k + 0.5);
+    // Autocorrelation stem R[k+1]/R[0] in muted ink
+    if (k + 1 < r.length) {
+      const rNorm = r[k + 1] / r0;
+      const ry = mid - rNorm * (h * 0.42);
+      ctx.strokeStyle = INK.inkFaint;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(cx - 3) + 0.5, mid);
+      ctx.lineTo(Math.round(cx - 3) + 0.5, ry);
+      ctx.stroke();
+    }
+    // Predictor stem a[k+1] in cyan LPC ink
+    const ay = mid - a[k] * scale;
+    ctx.strokeStyle = INK.lpc;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(Math.round(cx + 2) + 0.5, mid);
+    ctx.lineTo(Math.round(cx + 2) + 0.5, ay);
+    ctx.stroke();
+    ctx.fillStyle = INK.lpc;
+    ctx.fillRect(Math.round(cx + 2) - 2, ay - 2, 5, 5);
+
+    if (!s.bare && (p <= 14 || k % 2 === 0)) {
+      ctx.fillStyle = INK.muted;
+      ctx.font = s.font;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(`a${k + 1}`, cx, padT + h + 6);
+    }
+  }
+
+  if (s.px >= padL && s.px <= padL + w && s.py >= 0) {
+    const idx = Math.min(p - 1, Math.max(0, Math.floor(((s.px - padL) / w) * p)));
+    const rNorm = idx + 1 < r.length ? (r[idx + 1] / r0).toFixed(3) : "—";
+    s.hover = `k = ${idx + 1} · a[${idx + 1}] = ${a[idx].toFixed(4)} · R[${idx + 1}]/R[0] = ${rNorm}`;
+  } else {
+    s.hover = "";
+  }
+};
+
 const drawFft: DrawFn = (ctx, s, t) => spectrum(ctx, s, t, true, false, false);
 const drawLpc: DrawFn = (ctx, s, t) => spectrum(ctx, s, t, true, true, false);
 const drawFormants: DrawFn = (ctx, s, t) => spectrum(ctx, s, t, false, true, true);
@@ -439,6 +755,19 @@ const drawZPlane: DrawFn = (ctx, s, t) => {
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.stroke();
+
+  if (s.baseline && s.baseline !== t) {
+    const basePoles = s.baseline.zPlanePoles;
+    ctx.strokeStyle = INK.inkFaint;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < basePoles.length; i++) {
+      const bp = basePoles[i];
+      if (bp.magnitude === 0) continue;
+      ctx.beginPath();
+      ctx.arc(cx + bp.re * r, cy - bp.im * r, 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
 
   const poles = t.zPlanePoles;
   let nearest = -1;
@@ -609,6 +938,23 @@ const drawVowel: DrawFn = (ctx, s, t) => {
   if (t.voiced && t.formants.f1 > 0 && t.formants.f2 > 0) {
     const cx = xOf(t.formants.f2);
     const cy = yOf(t.formants.f1);
+    if (s.baseline && s.baseline !== t && s.baseline.voiced && s.baseline.formants.f1 > 0 && s.baseline.formants.f2 > 0) {
+      const bx = xOf(s.baseline.formants.f2);
+      const by = yOf(s.baseline.formants.f1);
+      ctx.setLineDash([2, 3]);
+      ctx.strokeStyle = INK.mutedSoft;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(cx, cy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = INK.inkSoft;
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.arc(bx, by, 4.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     const target = findVowel(s.targetId);
     ctx.setLineDash([2, 4]);
     ctx.strokeStyle = locked ? INK.lock : INK.inkSoft;
@@ -700,11 +1046,17 @@ export const DRAW: Record<TraceKind, DrawFn> = {
   mini: drawMini,
   voice: drawVoice,
   samples: drawSamples,
+  rawDecimated: drawRawDecimated,
+  preEmphasized: drawPreEmphasized,
+  windowed: drawWindowed,
   window: drawScope,
   scope: drawScope,
   pitch: drawPitch,
+  nsdf: drawNsdf,
   fft: drawFft,
+  fftHarmonics: drawFftHarmonics,
   lpc: drawLpc,
+  lpcCoeffs: drawLpcCoeffs,
   formants: drawFormants,
   spectrum: drawSpectrum,
   zplane: drawZPlane,

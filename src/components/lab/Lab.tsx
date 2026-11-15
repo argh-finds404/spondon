@@ -5,9 +5,11 @@ import { Prov, SourceSwitch, VowelKeys, type Provenance } from "@/components/ins
 import { PlateStage } from "@/components/instrument/PlateStage";
 import { Readout, type ReadoutField } from "@/components/instrument/Readout";
 import { Trace } from "@/components/instrument/Trace";
+import type { TraceKind } from "@/components/instrument/draw";
 import { findVowel, VOWEL_TARGETS, vowelGlyph } from "@/lib/dsp/vowel-targets";
 import { WINDOW_INFO, WINDOW_TYPES } from "@/lib/dsp/windows";
-import { useLabStore, type LabView } from "@/store/lab-store";
+import { labRuntime, useLabStore, type LabView, type TraceStageId } from "@/store/lab-store";
+import type { DSPFrameTelemetry } from "@/types/dsp";
 
 const VIEWS: { view: LabView; label: string }[] = [
   { view: "all", label: "All" },
@@ -179,18 +181,19 @@ function Readings() {
 function VoiceControls() {
   const synth = useLabStore((s) => s.synth);
   const volume = useLabStore((s) => s.volume);
-  const mic = useLabStore((s) => s.sourceMode === "mic");
+  const sourceMode = useLabStore((s) => s.sourceMode);
+  const liveInput = sourceMode === "mic" || sourceMode === "stream";
   const updateSynth = useLabStore((s) => s.updateSynth);
   const setVolume = useLabStore((s) => s.setVolume);
   return (
     <div className="px-3 py-2">
-      <Slider label="Pitch" value={synth.f0Hz} min={70} max={350} step={1} disabled={mic} format={(v) => `${v.toFixed(0)} Hz`} onCommit={(v) => updateSynth({ f0Hz: v })} />
-      <Slider label="Formant shift (tract length)" value={synth.formantShift} min={0.8} max={1.25} step={0.01} disabled={mic} format={(v) => `× ${v.toFixed(2)}`} onCommit={(v) => updateSynth({ formantShift: v })} />
-      <Slider label="Jitter put in" value={synth.jitterPercent} min={0} max={3} step={0.1} disabled={mic} format={(v) => `${v.toFixed(1)} %`} onCommit={(v) => updateSynth({ jitterPercent: v })} />
+      <Slider label="Pitch" value={synth.f0Hz} min={70} max={350} step={1} disabled={liveInput} format={(v) => `${v.toFixed(0)} Hz`} onCommit={(v) => updateSynth({ f0Hz: v })} />
+      <Slider label="Formant shift (tract length)" value={synth.formantShift} min={0.8} max={1.25} step={0.01} disabled={liveInput} format={(v) => `× ${v.toFixed(2)}`} onCommit={(v) => updateSynth({ formantShift: v })} />
+      <Slider label="Jitter put in" value={synth.jitterPercent} min={0} max={3} step={0.1} disabled={liveInput} format={(v) => `${v.toFixed(1)} %`} onCommit={(v) => updateSynth({ jitterPercent: v })} />
       <Slider label="Volume when played" value={volume} min={0} max={1} step={0.01} format={(v) => `${Math.round(v * 100)} %`} onCommit={setVolume} />
       <p className="ui-label mt-2">
-        {mic
-          ? "These shape the synthetic voice. With the microphone on, your own voice is the source."
+        {liveInput
+          ? "These shape the synthetic voice. With a live microphone or tab stream active, the external audio stream is the source."
           : "The voice is a pulse train through three resonators. Its formants are known exactly, so you can check the readings against what you set."}
       </p>
     </div>
@@ -217,12 +220,553 @@ function AnalysisControls() {
           {nodal ? "Shown" : "Hidden"}
         </button>
       </div>
-      <Slider label="Model order" value={options.lpcOrder} min={4} max={20} step={2} format={(v) => `${v} poles`} onCommit={(v) => update({ lpcOrder: v })} />
+      <Slider label="Model order" value={options.lpcOrder} min={4} max={24} step={2} format={(v) => `${v} poles`} onCommit={(v) => update({ lpcOrder: v })} />
       <p className="ui-label mt-2">
         {info.label} window: {info.formula}. Highest sidelobe {info.peakSidelobeDb.toFixed(1)} dB, main lobe{" "}
         {info.mainLobeBins} bins. Change the window in the Scope panel.
       </p>
     </div>
+  );
+}
+
+interface StageSpec {
+  id: TraceStageId;
+  pill: string;
+  title: string;
+  kind: Provenance;
+  beforeTitle: string;
+  beforeSub: string;
+  beforeTrace: TraceKind;
+  afterTitle: string;
+  afterSub: string;
+  afterTrace: TraceKind | "plate";
+  bypassLabel?: string;
+  why: string;
+}
+
+const TRACE_STAGES: readonly StageSpec[] = [
+  {
+    id: 1,
+    pill: "1. VOICE PCM",
+    title: "Stage 1 — Acoustic Pressure to 12 kHz Discrete PCM",
+    kind: "measured",
+    beforeTitle: "BEFORE · Continuous Incoming Waveform",
+    beforeSub: "Raw buffer x(t) arriving from Web Audio AnalyserNode at native device rate",
+    beforeTrace: "voice",
+    afterTitle: "AFTER · Decimated 12 kHz Stems x[n]",
+    afterSub: "512 discrete samples (42.7 ms window, Δt = 83.3 µs, Nyquist = 6 000 Hz)",
+    afterTrace: "samples",
+    why: "Decimating from 48 kHz to fs = 12 000 Hz concentrates all 512 samples and LPC poles inside 0–6 kHz, where human vowel formants F1–F3 actually live. Without decimation, a 12-pole LPC model wastes two-thirds of its degrees of freedom fitting empty air between 6 kHz and 24 kHz.",
+  },
+  {
+    id: 2,
+    pill: "2. PREP & PRE-EMPHASIS",
+    title: "Stage 2 — DC Removal & First-Order Pre-Emphasis Filter",
+    kind: "measured",
+    beforeTitle: "BEFORE · Raw Decimated Slice rawDecimated[n]",
+    beforeSub: "Steep −12 dB/octave glottal spectral tilt dominates high-frequency formants",
+    beforeTrace: "rawDecimated",
+    afterTitle: "AFTER · Pre-Emphasized y[n] = x[n] − α·x[n−1]",
+    afterSub: "+6 dB/octave high-pass boost flattens glottal roll-off so F2 & F3 stand out",
+    afterTrace: "preEmphasized",
+    bypassLabel: "✕ BYPASS STAGE (α = 0)",
+    why: "Human vocal fold vibration falls off at −12 dB/octave, leaving F2 and F3 up to 30 dB weaker than F1. If you bypass pre-emphasis (α = 0), Levinson–Durbin spends almost all its poles modeling the low-frequency glottal slope and F2/F3 collapse or vanish.",
+  },
+  {
+    id: 3,
+    pill: "3. WINDOW w[n]",
+    title: "Stage 3 — Tapered Windowing xw[n] = y[n] · w[n]",
+    kind: "measured",
+    beforeTitle: "BEFORE · Unwindowed Pre-Emphasized y[n]",
+    beforeSub: "Sharp boundary cliffs at n = 0 and n = 511 act like an impulse step",
+    beforeTrace: "preEmphasized",
+    afterTitle: "AFTER · Windowed Frame xw[n] = y[n] · w[n]",
+    afterSub: "Smooth bell taper brings both frame edges to zero before FFT & autocorrelation",
+    afterTrace: "windowed",
+    bypassLabel: "✕ BYPASS STAGE (Rectangular)",
+    why: "Slicing 512 samples out of a continuous voice wave leaves abrupt discontinuities at n = 0 and n = 511. If you bypass tapered windowing (Rectangular w[n] = 1), those sharp edges spray −13 dB spectral leakage across the entire spectrum and bias autocorrelation lags.",
+  },
+  {
+    id: 4,
+    pill: "4. 1024-pt FFT",
+    title: "Stage 4 — Zero-Padded 1024-Point Radix-2 Cooley–Tukey FFT",
+    kind: "measured",
+    beforeTitle: "BEFORE · Windowed Time-Domain Slice xw[n]",
+    beforeSub: "512 tapered samples padded with 512 trailing zeros (N = 1024)",
+    beforeTrace: "windowed",
+    afterTitle: "AFTER · Log-Power Spectrum |X[k]| dB & Harmonics",
+    afterSub: "512 bins from 0 to 6 kHz (Δf = 11.72 Hz/bin) with glottal harmonic peaks ▲ k·F0",
+    afterTrace: "fftHarmonics",
+    why: "The 1024-point FFT decomposes the time wave into a fine comb of glottal harmonics spaced every F0 Hz. However, the FFT alone cannot directly give you formants—picking the tallest FFT bin picks a pitch harmonic k·F0 rather than the vocal tract resonance center.",
+  },
+  {
+    id: 5,
+    pill: "5. PITCH / F0 (NSDF)",
+    title: "Stage 5 — McLeod Normalized Square Difference Function (NSDF)",
+    kind: "measured",
+    beforeTitle: "BEFORE · Periodic Glottal Cycles in Time Domain",
+    beforeSub: "Repeating vocal-fold pitch periods T0 = 1 / F0 across the 42.7 ms frame",
+    beforeTrace: "pitch",
+    afterTitle: "AFTER · NSDF Curve n(τ) & Parabolic Peak τ_peak",
+    afterSub: "First major peak above 0.9·n_max pins fundamental period τ_peak → F0 = fs / τ_peak",
+    afterTrace: "nsdf",
+    why: "Time-domain zero-crossing counters fail whenever strong formants create multiple crossings per period. McLeod's NSDF normalizes autocorrelation energy at every lag τ ∈ [0, 255] into [−1, +1] and uses parabolic interpolation to lock onto F0 with sub-sample precision.",
+  },
+  {
+    id: 6,
+    pill: "6. LPC(p) ENVELOPE",
+    title: "Stage 6 — Autocorrelation & Levinson–Durbin All-Pole Envelope",
+    kind: "derived",
+    beforeTitle: "BEFORE · Jagged FFT Harmonic Comb |X[k]|",
+    beforeSub: "Individual glottal harmonics obscure the underlying vocal-tract resonances",
+    beforeTrace: "fft",
+    afterTitle: "AFTER · Smooth All-Pole Envelope H(e^jω) over FFT",
+    afterSub: "Levinson–Durbin solves Toeplitz system R·a = r in O(p²) to fit vocal-tract filter",
+    afterTrace: "spectrum",
+    bypassLabel: "✕ UNDER-FIT STAGE (Order p = 4)",
+    why: "Linear Predictive Coding separates the vocal tract filter H(z) from the glottal source by predicting each sample from the previous p samples. Lowering p to 4 under-fits and merges F1/F2 into a single blob; raising p to 24 over-fits and chases individual pitch harmonics.",
+  },
+  {
+    id: 7,
+    pill: "7. Z-PLANE POLES",
+    title: "Stage 7 — Companion Matrix Eigenvalues & Complex Z-Plane Poles",
+    kind: "derived",
+    beforeTitle: "BEFORE · Predictor Polynomial A(z) = 1 − ∑ a_k z^−k",
+    beforeSub: "LPC coefficients a[1..p] (cyan) and normalized autocorrelation R[1..p]/R[0] (faint)",
+    beforeTrace: "lpcCoeffs",
+    afterTitle: "AFTER · Complex Conjugate Roots z_k = r_k e^(±jθ_k)",
+    afterSub: "Pole angle θ_k gives frequency Hz; pole radius r_k gives bandwidth B = −(fs/π) ln r_k",
+    afterTrace: "zplane",
+    why: "Peaks on the LPC spectrum can still merge when two formants sit close together. Factoring A(z) = 0 into complex roots inside the unit circle reveals every resonance's exact pole angle (frequency) and radius (damping), keeping only upper-half-plane roots with B < 500 Hz as F1, F2, F3.",
+  },
+  {
+    id: 8,
+    pill: "8. FORMANTS & VOWEL",
+    title: "Stage 8 — Acoustic Vowel Space (F1, F2) & Chladni Nodal Mapping",
+    kind: "mapped",
+    beforeTitle: "BEFORE · Extracted Formants (F1, F2, F3) in Vowel Space",
+    beforeSub: "Bark-scale psychoacoustic distance to 8 Bangla / IPA reference vowels",
+    beforeTrace: "vowel",
+    afterTitle: "AFTER · Chladni Standing-Wave Plate C(x, y) = 0",
+    afterSub: "Deterministic bijective mapping: F1 → mode m, F2 → mode n on a square plate",
+    afterTrace: "plate",
+    why: "Tongue height controls pharyngeal cavity volume (F1, vertical axis) while tongue advancement controls oral cavity length (F2, horizontal axis). Mapping (F1, F2) into Bark space and Chladni nodal numbers (m, n) turns an invisible acoustic resonance into a reproducible geometric fingerprint.",
+  },
+] as const;
+
+function fmtArr(arr: ArrayLike<number>, count: number, digits = 4): string {
+  const n = Math.min(count, arr.length);
+  const parts: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const v = arr[i];
+    parts.push(`${v >= 0 ? "+" : ""}${v.toFixed(digits)}`);
+  }
+  return `[ ${parts.join(", ")}${arr.length > n ? ", …" : ""} ]`;
+}
+
+function TraceInspector() {
+  const traceStage = useLabStore((s) => s.traceStage);
+  const setTraceStage = useLabStore((s) => s.setTraceStage);
+  const stepTraceStage = useLabStore((s) => s.stepTraceStage);
+  const setTraceOpen = useLabStore((s) => s.setTraceOpen);
+  const captureAndTrace = useLabStore((s) => s.captureAndTrace);
+  const toggleBypassStage = useLabStore((s) => s.toggleBypassStage);
+  const bypassedStage = useLabStore((s) => s.bypassedStage);
+  const frozen = useLabStore((s) => s.frozen);
+  const toggleFreeze = useLabStore((s) => s.toggleFreeze);
+  const recomputeCount = useLabStore((s) => s.recomputeCount);
+  const options = useLabStore((s) => s.analyzerOptions);
+  const updateOptions = useLabStore((s) => s.updateAnalyzerOptions);
+  const selectTarget = useLabStore((s) => s.selectTarget);
+  const sourceMode = useLabStore((s) => s.sourceMode);
+  const nodal = useLabStore((s) => s.showNodalLines);
+
+  const [showMath, setShowMath] = useState(true);
+  const [, setTick] = useState(0);
+
+  // Subscribe to telemetry updates so the live mathematical tape stays in sync when live or re-computed.
+  useEffect(() => {
+    let last = 0;
+    return labRuntime.subscribe(() => {
+      const now = performance.now();
+      if (useLabStore.getState().frozen || now - last > 140) {
+        last = now;
+        setTick((c) => (c + 1) % 100000);
+      }
+    });
+  }, [recomputeCount, frozen, traceStage]);
+
+  const spec = TRACE_STAGES[traceStage - 1];
+  const active: DSPFrameTelemetry = labRuntime.getActiveTelemetry();
+  const base: DSPFrameTelemetry = labRuntime.getBaselineTelemetry();
+  const sb = active.stageBuffers;
+  const winInfo = WINDOW_INFO[options.windowType];
+  const canBypass = traceStage === 2 || traceStage === 3 || traceStage === 6;
+  const isBypassed = bypassedStage === traceStage;
+  const modifiedWhileFrozen = frozen && recomputeCount > 0;
+
+  const restoreBaseline = () => {
+    const baseOpts = labRuntime.getBaselineOptions();
+    updateOptions(baseOpts);
+    useLabStore.setState({ bypassedStage: null, recomputeCount: 0 });
+  };
+
+  return (
+    <section
+      aria-label="Trace and Re-Run Signal Inspector"
+      className="ui-panel mb-4 border border-accent/50 bg-surface"
+    >
+      {/* Top Pipeline Stepper Header */}
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-3 py-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <span className="mark bg-accent!" aria-hidden />
+          <h2 className="text-[13px] font-semibold tracking-wide text-ink uppercase">
+            Trace &amp; Re-Run Signal
+          </h2>
+          <span className="bg-raised px-2 py-0.5 text-[11px] font-medium text-muted">
+            {frozen
+              ? modifiedWhileFrozen
+                ? `Frozen slice · Re-computed (${recomputeCount}×) vs Baseline`
+                : "Frozen slice · 512 samples locked"
+              : "Live stream · Click Freeze or Capture to lock a slice"}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => stepTraceStage(-1)}
+            className="btn min-h-8! px-2.5! py-1! text-[12px]"
+          >
+            ◀ PREV
+          </button>
+          <button
+            type="button"
+            onClick={() => stepTraceStage(1)}
+            className="btn min-h-8! px-2.5! py-1! text-[12px]"
+          >
+            STEP ▶
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!frozen) captureAndTrace();
+              else {
+                toggleFreeze();
+                setTimeout(() => useLabStore.getState().captureAndTrace(), 40);
+              }
+            }}
+            className="ui-tab min-h-8 border border-line px-2.5 text-[12px] font-medium"
+            title="Capture the latest 512-sample voice slice as the new baseline"
+          >
+            Capture new slice
+          </button>
+          {modifiedWhileFrozen && (
+            <button
+              type="button"
+              onClick={restoreBaseline}
+              className="ui-tab min-h-8 border border-line px-2.5 text-[12px] font-medium text-accent"
+            >
+              Restore baseline
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setTraceOpen(false)}
+            className="ui-tab min-h-8 px-2 text-[12px] font-medium text-muted hover:text-ink"
+          >
+            Close ✕
+          </button>
+        </div>
+      </header>
+
+      {/* 8-Stage Pipeline Bar */}
+      <div
+        role="tablist"
+        aria-label="8-Stage DSP Pipeline"
+        className="no-scrollbar flex items-center gap-1 overflow-x-auto border-b border-line bg-raised/50 px-3 py-2"
+      >
+        {TRACE_STAGES.map((st, idx) => {
+          const current = st.id === traceStage;
+          return (
+            <div key={st.id} className="flex flex-none items-center gap-1">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={current}
+                onClick={() => setTraceStage(st.id)}
+                className={`px-2.5 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors ${
+                  current
+                    ? "bg-accent text-[#08090c] font-semibold"
+                    : "bg-raised text-muted hover:text-ink"
+                }`}
+              >
+                [ {st.pill} ]
+              </button>
+              {idx < TRACE_STAGES.length - 1 && (
+                <span className="px-0.5 text-[11px] text-muted select-none" aria-hidden>
+                  ➔
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Stage Subheader & Interactive Re-Computation Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-3 py-2.5">
+        <div>
+          <h3 className="text-[14px] font-semibold text-ink">
+            <Prov kind={spec.kind}>{spec.title}</Prov>
+          </h3>
+        </div>
+
+        {/* Stage-specific live re-computation controls */}
+        <div className="flex flex-wrap items-center gap-3">
+          {traceStage === 2 && (
+            <button
+              type="button"
+              aria-pressed={options.preEmphasis > 0}
+              onClick={() => updateOptions({ preEmphasis: options.preEmphasis > 0 ? 0 : 0.97 })}
+              className="btn min-h-8! px-3! py-1! text-[12px]"
+            >
+              [ Toggle Pre-Emphasis α=0.97 : {options.preEmphasis > 0 ? "ON" : "OFF (α=0)"} ]
+            </button>
+          )}
+
+          {(traceStage === 3 || traceStage === 4) && (
+            <div role="radiogroup" aria-label="Window function" className="flex flex-wrap items-center gap-1.5">
+              {WINDOW_TYPES.map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  role="radio"
+                  aria-checked={options.windowType === w}
+                  onClick={() => updateOptions({ windowType: w })}
+                  className={`px-2.5 py-1 text-[12px] font-medium ${
+                    options.windowType === w ? "bg-accent text-[#08090c] font-semibold" : "bg-raised text-muted hover:text-ink"
+                  }`}
+                >
+                  {WINDOW_INFO[w].label}
+                </button>
+              ))}
+              <span className="ui-fig ml-1 text-[11px] text-muted">
+                Sidelobe {winInfo.peakSidelobeDb.toFixed(1)} dB · Main lobe {winInfo.mainLobeBins} bins
+              </span>
+            </div>
+          )}
+
+          {(traceStage === 6 || traceStage === 7) && (
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-[12px]">
+                <span className="text-muted">LPC Order p:</span>
+                <input
+                  type="range"
+                  min={4}
+                  max={24}
+                  step={2}
+                  value={options.lpcOrder}
+                  onChange={(e) => updateOptions({ lpcOrder: Number(e.target.value) })}
+                  className="ui-slider w-28"
+                />
+                <span className="ui-fig min-w-[6ch] font-semibold text-ink">{options.lpcOrder} poles</span>
+              </label>
+            </div>
+          )}
+
+          {canBypass && (
+            <button
+              type="button"
+              aria-pressed={isBypassed}
+              onClick={() => toggleBypassStage(traceStage)}
+              className={`px-2.5 py-1 text-[12px] font-medium transition-colors ${
+                isBypassed
+                  ? "bg-accent text-[#08090c] font-semibold"
+                  : "border border-line bg-raised text-ink hover:border-accent"
+              }`}
+            >
+              [ {isBypassed ? "✓ STAGE BYPASSED — CLICK TO RESTORE" : spec.bypassLabel ?? "✕ BYPASS THIS STAGE"} ]
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* BEFORE | AFTER Visual Comparison Grid */}
+      <div className="grid grid-cols-12 border-b border-line">
+        {/* LEFT COLUMN: BEFORE (Stage Input) */}
+        <div className="col-span-12 flex flex-col border-b border-line md:col-span-6 md:border-r md:border-b-0">
+          <div className="flex items-baseline justify-between gap-2 border-b border-line bg-raised/30 px-3 py-1.5">
+            <span className="text-[12px] font-semibold text-ink">{spec.beforeTitle}</span>
+            <span className="text-[11px] text-muted">{spec.beforeSub}</span>
+          </div>
+          <Trace
+            kind={spec.beforeTrace}
+            inspect
+            compareBaseline={traceStage === 8}
+            onPick={traceStage === 8 ? (id) => selectTarget(id, sourceMode !== "mic" && sourceMode !== "stream") : undefined}
+            label={spec.beforeTitle}
+            className="h-[220px] w-full"
+          />
+        </div>
+
+        {/* RIGHT COLUMN: AFTER (Stage Output) */}
+        <div className="col-span-12 flex flex-col md:col-span-6">
+          <div className="flex items-baseline justify-between gap-2 border-b border-line bg-raised/30 px-3 py-1.5">
+            <span className="text-[12px] font-semibold text-ink">{spec.afterTitle}</span>
+            <span className="text-[11px] text-muted">{spec.afterSub}</span>
+          </div>
+          {spec.afterTrace === "plate" ? (
+            <PlateStage interactive showNodalLines={nodal} className="h-[220px] w-full" />
+          ) : (
+            <Trace
+              kind={spec.afterTrace}
+              inspect
+              compareBaseline
+              label={spec.afterTitle}
+              className="h-[220px] w-full"
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Live Stage Telemetry Strip (Baseline vs Current when frozen & modified) */}
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5 border-b border-line bg-raised/40 px-3 py-2 text-[12px]">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+          <span>
+            <span className="text-muted">Params:</span>{" "}
+            <span className="ui-fig text-ink">
+              α = {options.preEmphasis.toFixed(2)} · {WINDOW_INFO[options.windowType].label} · LPC({options.lpcOrder})
+            </span>
+          </span>
+          <span>
+            <span className="text-muted">F0:</span>{" "}
+            <span className="ui-fig text-ink">
+              {active.voiced ? `${Math.round(active.stability.f0Hz)} Hz (τ = ${sb.peakLagTau.toFixed(1)})` : "Unvoiced"}
+            </span>
+          </span>
+          <span>
+            <span className="text-muted">Formants (AFTER):</span>{" "}
+            <span className="ui-fig text-ink">
+              F1 {Math.round(active.formants.f1)} Hz · F2 {Math.round(active.formants.f2)} Hz · F3 {Math.round(active.formants.f3)} Hz
+            </span>
+          </span>
+          {modifiedWhileFrozen && (
+            <span>
+              <span className="text-muted">Baseline (BEFORE):</span>{" "}
+              <span className="ui-fig text-muted">
+                F1 {Math.round(base.formants.f1)} Hz · F2 {Math.round(base.formants.f2)} Hz · F3 {Math.round(base.formants.f3)} Hz
+              </span>
+              <span className="ui-fig ml-2 text-accent">
+                (ΔF1 {Math.round(active.formants.f1 - base.formants.f1) >= 0 ? "+" : ""}
+                {Math.round(active.formants.f1 - base.formants.f1)} Hz, ΔF2{" "}
+                {Math.round(active.formants.f2 - base.formants.f2) >= 0 ? "+" : ""}
+                {Math.round(active.formants.f2 - base.formants.f2)} Hz)
+              </span>
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          aria-expanded={showMath}
+          onClick={() => setShowMath(!showMath)}
+          className="ui-tab min-h-7 text-[12px] font-semibold text-accent"
+        >
+          [ {showMath ? "HIDE MATHEMATICS ▲" : "SHOW MATHEMATICS ▼"} ]
+        </button>
+      </div>
+
+      {/* Bottom Strip: WHY THIS STAGE MATTERS + Expandable SHOW MATHEMATICS Tape */}
+      <div className="px-3 py-2.5">
+        <p className="text-[13px] leading-relaxed text-ink">
+          <strong className="font-semibold text-accent uppercase">Why this stage matters: </strong>
+          {spec.why}
+        </p>
+
+        {showMath && (
+          <div className="mt-3 grid grid-cols-12 gap-3 border-t border-line pt-3 text-[12px]">
+            <div className="col-span-12 space-y-1.5 lg:col-span-7">
+              <div className="text-[11px] font-semibold tracking-wider text-muted uppercase">
+                Live Captured Frame Numerical Tape (N = 512, fs = {active.analysisRate} Hz)
+              </div>
+              <div className="ui-fig overflow-x-auto bg-raised p-2.5 leading-relaxed text-ink">
+                <div>
+                  <span className="text-muted">rawDecimated x[0..5]   = </span>
+                  {fmtArr(sb.rawDecimated, 6, 4)}
+                </div>
+                <div>
+                  <span className="text-muted">preEmphasized y[0..5]  = </span>
+                  {fmtArr(sb.preEmphasized, 6, 4)}{" "}
+                  <span className="text-muted">(y[n] = x[n] − {options.preEmphasis.toFixed(2)}·x[n−1])</span>
+                </div>
+                <div>
+                  <span className="text-muted">windowWeights w[0..5]  = </span>
+                  {fmtArr(sb.windowWeights, 6, 4)}{" "}
+                  <span className="text-muted">({WINDOW_INFO[options.windowType].label}, w[256] = {sb.windowWeights[256]?.toFixed(4) ?? "1.0000"})</span>
+                </div>
+                <div>
+                  <span className="text-muted">windowed xw[0..5]      = </span>
+                  {fmtArr(sb.windowed, 6, 4)}
+                </div>
+                <div>
+                  <span className="text-muted">autocorr R[0..6]       = </span>
+                  {fmtArr(sb.autocorrCoeffs, 7, 4)}
+                </div>
+                <div>
+                  <span className="text-muted">lpcCoeffs a[1..{sb.lpcCoeffs.length}] = </span>
+                  {fmtArr(sb.lpcCoeffs, 8, 4)}{" "}
+                  <span className="text-muted">· Gain G = {sb.lpcGain.toFixed(4)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="col-span-12 lg:col-span-5">
+              <div className="mb-1.5 text-[11px] font-semibold tracking-wider text-muted uppercase">
+                Extracted Upper-Half-Plane Roots (r, θ) → (F_i, B_i)
+              </div>
+              <div className="max-h-[152px] overflow-y-auto bg-raised p-2">
+                <table className="ui-fig w-full text-left text-[11px]">
+                  <thead>
+                    <tr className="border-b border-line text-muted">
+                      <th className="pb-1">Root z</th>
+                      <th className="pb-1">|z| = r</th>
+                      <th className="pb-1">θ / π</th>
+                      <th className="pb-1">Freq</th>
+                      <th className="pb-1">BW</th>
+                      <th className="pb-1">Role</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sb.allPoles
+                      .filter((p) => p.im >= 0 && p.radius > 0)
+                      .map((p, i) => (
+                        <tr key={i} className="border-b border-line/40 last:border-0">
+                          <td className="py-0.5">
+                            {p.re.toFixed(2)}+{p.im.toFixed(2)}j
+                          </td>
+                          <td className="py-0.5">{p.radius.toFixed(3)}</td>
+                          <td className="py-0.5">{p.anglePi.toFixed(3)}π</td>
+                          <td className="py-0.5">{Math.round(p.freqHz)} Hz</td>
+                          <td className="py-0.5">{Math.round(p.bandwidthHz)} Hz</td>
+                          <td className="py-0.5 font-semibold text-accent">
+                            {p.selectedAs ?? "rejected"}
+                          </td>
+                        </tr>
+                      ))}
+                    {sb.allPoles.filter((p) => p.im >= 0 && p.radius > 0).length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="py-2 text-center text-muted">
+                          No conjugate poles in current frame.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -234,6 +778,9 @@ export function Lab() {
   const setActiveView = useLabStore((s) => s.setActiveView);
   const frozen = useLabStore((s) => s.frozen);
   const toggleFreeze = useLabStore((s) => s.toggleFreeze);
+  const traceOpen = useLabStore((s) => s.traceOpen);
+  const setTraceOpen = useLabStore((s) => s.setTraceOpen);
+  const captureAndTrace = useLabStore((s) => s.captureAndTrace);
   const reset = useLabStore((s) => s.resetCalibration);
   const micError = useLabStore((s) => s.micError);
   const micStatus = useLabStore((s) => s.micStatus);
@@ -245,6 +792,7 @@ export function Lab() {
   const [side, setSide] = useState<(typeof SIDE_TABS)[number]>("Readings");
   const target = findVowel(targetId);
   const solo = activeView !== "all";
+  const liveInput = sourceMode === "mic" || sourceMode === "stream";
 
   // /lab?vowel=ii opens holding that vowel (the homepage form and the atlas link here).
   useEffect(() => {
@@ -270,7 +818,15 @@ export function Lab() {
         </div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
           <SourceSwitch />
-          <span className="flex items-center gap-5">
+          <span className="flex items-center gap-4">
+            <button
+              type="button"
+              aria-pressed={traceOpen}
+              onClick={() => (traceOpen ? setTraceOpen(false) : captureAndTrace())}
+              className="btn min-h-9! px-3! py-1! text-[12px] font-semibold tracking-wide"
+            >
+              [ TRACE THIS SIGNAL ]
+            </button>
             <button type="button" aria-pressed={frozen} onClick={toggleFreeze} className="ui-tab min-h-11 text-[13px] font-medium lg:min-h-8">
               Freeze
             </button>
@@ -283,7 +839,7 @@ export function Lab() {
 
       {micStatus === "requesting" && (
         <p role="status" className="mb-3 bg-raised px-3 py-2 text-[13px] text-ink">
-          Waiting for the browser&rsquo;s microphone permission.
+          Waiting for the browser&rsquo;s audio permission.
         </p>
       )}
       {micError && (
@@ -297,6 +853,14 @@ export function Lab() {
           Microphone on. Hold a vowel for a second or two; nothing you say is recorded or sent.
         </p>
       )}
+      {sourceMode === "stream" && (
+        <p role="status" className="mb-3 flex items-center gap-2.5 bg-raised px-3 py-2 text-[13px] text-ink">
+          <span className="mark bg-accent!" aria-hidden />
+          Tab / YouTube audio stream active. Click [ TRACE THIS SIGNAL ] at any moment to freeze a 512-sample voice slice and re-run it stage-by-stage.
+        </p>
+      )}
+
+      {traceOpen && <TraceInspector />}
 
       <div role="tablist" aria-label="Panels" className="no-scrollbar -mx-1 mb-3 flex gap-5 overflow-x-auto px-1">
         {VIEWS.map((v) => (
@@ -318,8 +882,9 @@ export function Lab() {
           <Trace
             kind="vowel"
             inspect
+            compareBaseline
             label="Vowel chart: first formant against second, with eight reference vowels, the live position and its trail"
-            onPick={(id) => selectTarget(id, sourceMode !== "mic")}
+            onPick={(id) => selectTarget(id, !liveInput)}
             className={`w-full ${plotHeight || "min-h-[300px] flex-1 lg:min-h-[240px]"}`}
           />
           <VowelKeys className="border-t border-line p-0.5" />
@@ -381,11 +946,11 @@ export function Lab() {
             </p>
           }
         >
-          <Trace kind="spectrum" inspect label="Magnitude spectrum with the linear-prediction envelope and formant markers" className={`w-full ${plotHeight || "h-[220px] lg:h-[clamp(150px,20svh,240px)]"}`} />
+          <Trace kind="spectrum" inspect compareBaseline label="Magnitude spectrum with the linear-prediction envelope and formant markers" className={`w-full ${plotHeight || "h-[220px] lg:h-[clamp(150px,20svh,240px)]"}`} />
         </Panel>
 
         <Panel view="poles" title="Z-plane" kind="derived" className="col-span-12 lg:col-span-3">
-          <Trace kind="zplane" inspect label="Poles of the vocal-tract model inside the unit circle" className={`w-full ${plotHeight || "h-[260px] lg:h-[clamp(150px,20svh,240px)]"}`} />
+          <Trace kind="zplane" inspect compareBaseline label="Poles of the vocal-tract model inside the unit circle" className={`w-full ${plotHeight || "h-[260px] lg:h-[clamp(150px,20svh,240px)]"}`} />
         </Panel>
 
         {solo && (

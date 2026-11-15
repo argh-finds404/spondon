@@ -41,6 +41,7 @@ export function VowelKeys({ className }: { className?: string }) {
   const sourceMode = useLabStore((s) => s.sourceMode);
   const selectTarget = useLabStore((s) => s.selectTarget);
   const updateSynth = useLabStore((s) => s.updateSynth);
+  const liveInput = sourceMode === "mic" || sourceMode === "stream";
 
   return (
     <div data-ui className={className}>
@@ -53,7 +54,7 @@ export function VowelKeys({ className }: { className?: string }) {
               type="button"
               aria-pressed={pressed}
               aria-label={`${v.label} ${v.symbol}`}
-              onClick={() => selectTarget(v.id, sourceMode !== "mic")}
+              onClick={() => selectTarget(v.id, !liveInput)}
               className="group flex min-h-16 flex-col items-center justify-center gap-0.5 bg-raised transition-[background-color,transform] duration-150 hover:bg-[#20242d] active:scale-[0.97]"
             >
               <span
@@ -70,7 +71,7 @@ export function VowelKeys({ className }: { className?: string }) {
         <button
           type="button"
           aria-pressed={tour}
-          disabled={sourceMode === "mic"}
+          disabled={liveInput}
           onClick={() => updateSynth({ tour: !tour })}
           className="col-span-4 flex min-h-11 items-center justify-center bg-raised transition-[background-color,transform] duration-150 hover:bg-[#20242d] active:scale-[0.97] disabled:opacity-45 sm:col-span-1 sm:min-h-16"
         >
@@ -87,6 +88,7 @@ const SOURCES: { mode: SourceMode; label: string; hint: string }[] = [
   { mode: "silent", label: "Silent", hint: "Synthetic voice, analysed without sound" },
   { mode: "synth", label: "Play synth", hint: "Synthetic voice through your speakers" },
   { mode: "mic", label: "Microphone", hint: "Your own voice" },
+  { mode: "stream", label: "Tab / YouTube", hint: "Share a browser tab with audio (YouTube, Spotify, recordings)" },
 ];
 
 export function SourceSwitch({ className }: { className?: string }) {

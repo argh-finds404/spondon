@@ -1,12 +1,13 @@
 import { create } from "zustand";
-import type { AnalyzerOptions } from "@/lib/dsp/analyzer";
-import { DEFAULT_ANALYZER_OPTIONS, FRAME_SIZE } from "@/lib/dsp/analyzer";
+import type { AnalysisConfig, AnalyzerOptions } from "@/lib/dsp/analyzer";
+import { createStageTraceBuffers, DEFAULT_ANALYZER_OPTIONS, FRAME_SIZE } from "@/lib/dsp/analyzer";
 import { AudioController, DEFAULT_SYNTH, type SourceMode, type SynthSettings } from "@/lib/dsp/audio-controller";
 import { DEFAULT_TARGET, findVowel } from "@/lib/dsp/vowel-targets";
 import type { ComplexPoint, DSPFrameTelemetry, WindowType } from "@/types/dsp";
 
 /** "all" shows every panel; the others solo one. */
 export type LabView = "all" | "figure" | "vowel" | "spectrum" | "poles" | "scope";
+export type TraceStageId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 export interface LabState {
   activeView: LabView;
@@ -14,6 +15,10 @@ export interface LabState {
   micStatus: "idle" | "requesting" | "active" | "error";
   micError: string | null;
   frozen: boolean;
+  traceOpen: boolean;
+  traceStage: number;
+  bypassedStage: number | null;
+  recomputeCount: number;
   showNodalLines: boolean;
   targetId: string;
   synth: SynthSettings;
@@ -24,6 +29,11 @@ export interface LabState {
   setShowNodalLines: (show: boolean) => void;
   setSourceMode: (mode: SourceMode) => Promise<void>;
   toggleFreeze: () => void;
+  setTraceOpen: (open: boolean) => void;
+  setTraceStage: (stage: number) => void;
+  stepTraceStage: (delta: number) => void;
+  captureAndTrace: () => void;
+  toggleBypassStage: (stage: number) => void;
   selectTarget: (vowelId: string, syncSynth?: boolean) => void;
   updateSynth: (patch: Partial<SynthSettings>) => void;
   updateAnalyzerOptions: (patch: Partial<AnalyzerOptions>) => void;
@@ -83,6 +93,7 @@ function createSnapshotBuffer(): DSPFrameTelemetry {
       convergenceScore: 0,
       guidance: "Waiting for a voiced sound.",
     },
+    stageBuffers: createStageTraceBuffers(12),
   };
 }
 
@@ -114,6 +125,19 @@ function copyTelemetryInto(src: DSPFrameTelemetry, dst: DSPFrameTelemetry): void
   Object.assign(dst.formants, src.formants);
   Object.assign(dst.stability, src.stability);
   Object.assign(dst.activeTargetMatch, src.activeTargetMatch);
+
+  const ssb = src.stageBuffers;
+  const dsb = dst.stageBuffers;
+  dsb.rawDecimated.set(ssb.rawDecimated);
+  dsb.preEmphasized.set(ssb.preEmphasized);
+  dsb.windowWeights.set(ssb.windowWeights);
+  dsb.windowed.set(ssb.windowed);
+  dsb.nsdfCurve.set(ssb.nsdfCurve);
+  dsb.peakLagTau = ssb.peakLagTau;
+  dsb.autocorrCoeffs = ssb.autocorrCoeffs.slice();
+  dsb.lpcCoeffs = ssb.lpcCoeffs.slice();
+  dsb.lpcGain = ssb.lpcGain;
+  dsb.allPoles = ssb.allPoles.map((p) => ({ ...p }));
 }
 
 class LabRuntime {
@@ -122,6 +146,10 @@ class LabRuntime {
   private listeners = new Set<FrameListener>();
   private frozen = false;
   private snapshot = createSnapshotBuffer();
+  private baselineSnapshot = createSnapshotBuffer();
+  private capturedRawPcm: Float32Array | null = null;
+  private capturedSampleRate = 48000;
+  private baselineOptions: AnalyzerOptions = { ...DEFAULT_ANALYZER_OPTIONS };
   private divider = 1;
   private frame = 0;
 
@@ -137,6 +165,10 @@ class LabRuntime {
     if (typeof window === "undefined") return null;
     if (!this.controller) {
       this.controller = new AudioController(DEFAULT_SYNTH, DEFAULT_ANALYZER_OPTIONS);
+      this.controller.onStreamEnded = () => {
+        useLabStore.setState({ sourceMode: "silent", micStatus: "idle", micError: null });
+        this.controller?.stop();
+      };
     }
     return this.controller;
   }
@@ -151,14 +183,63 @@ class LabRuntime {
     return ctrl ? ctrl.telemetry : this.snapshot;
   }
 
+  /** The original frozen telemetry captured before any parameter changes while paused. */
+  getBaselineTelemetry(): DSPFrameTelemetry {
+    if (this.frozen) return this.baselineSnapshot;
+    return this.getActiveTelemetry();
+  }
+
+  getCapturedRawPcm(): Float32Array | null {
+    return this.capturedRawPcm;
+  }
+
+  getBaselineOptions(): AnalyzerOptions {
+    return this.baselineOptions;
+  }
+
   setFrozen(frozen: boolean): void {
     const ctrl = this.ensureController();
     if (frozen && !this.frozen && ctrl) {
+      const rawSlice = ctrl.getCurrentRawSlice();
+      this.capturedRawPcm = new Float32Array(rawSlice);
+      this.capturedSampleRate = ctrl.analyzer.sampleRate;
+      this.baselineOptions = { ...ctrl.analyzer.options };
       copyTelemetryInto(ctrl.telemetry, this.snapshot);
+      copyTelemetryInto(ctrl.telemetry, this.baselineSnapshot);
     }
     this.frozen = frozen;
     const active = this.getActiveTelemetry();
     for (const cb of this.listeners) cb(active);
+  }
+
+  /** Capture a fresh raw slice from the live controller and freeze on it. */
+  captureNewSlice(): void {
+    const ctrl = this.ensureController();
+    if (!ctrl) return;
+    const rawSlice = ctrl.getCurrentRawSlice();
+    this.capturedRawPcm = new Float32Array(rawSlice);
+    this.capturedSampleRate = ctrl.analyzer.sampleRate;
+    this.baselineOptions = { ...ctrl.analyzer.options };
+    copyTelemetryInto(ctrl.telemetry, this.snapshot);
+    copyTelemetryInto(ctrl.telemetry, this.baselineSnapshot);
+    this.frozen = true;
+    for (const cb of this.listeners) cb(this.snapshot);
+  }
+
+  /** Re-run VoiceAnalyzer on the captured raw PCM buffer while frozen and broadcast the updated telemetry. */
+  recomputeFrozen(overrides: AnalysisConfig = {}): DSPFrameTelemetry {
+    const ctrl = this.ensureController();
+    if (!this.frozen || !ctrl || !this.capturedRawPcm) return this.getActiveTelemetry();
+    const recomputed = ctrl.analyzer.reprocessCapturedBuffer(
+      this.capturedRawPcm,
+      this.capturedSampleRate,
+      overrides,
+    );
+    const savedTs = this.baselineSnapshot.timestampMs;
+    copyTelemetryInto(recomputed, this.snapshot);
+    this.snapshot.timestampMs = savedTs;
+    for (const cb of this.listeners) cb(this.snapshot);
+    return this.snapshot;
   }
 
   clearTrail(): void {
@@ -217,6 +298,10 @@ export const useLabStore = create<LabState>((set, get) => ({
   micStatus: "idle",
   micError: null,
   frozen: false,
+  traceOpen: false,
+  traceStage: 1,
+  bypassedStage: null,
+  recomputeCount: 0,
   showNodalLines: true,
   targetId: DEFAULT_TARGET.id,
   synth: { ...DEFAULT_SYNTH },
@@ -237,7 +322,7 @@ export const useLabStore = create<LabState>((set, get) => ({
       return;
     }
 
-    if (mode === "mic") {
+    if (mode === "mic" || mode === "stream") {
       set({ micStatus: "requesting", micError: null });
     } else {
       set({ micStatus: "idle", micError: null });
@@ -247,20 +332,22 @@ export const useLabStore = create<LabState>((set, get) => ({
       await ctrl.start(mode);
       set({
         sourceMode: mode,
-        micStatus: mode === "mic" ? "active" : "idle",
+        micStatus: mode === "mic" || mode === "stream" ? "active" : "idle",
         micError: null,
       });
     } catch (err) {
       ctrl.stop();
       const rawMsg = err instanceof Error ? err.message : "Audio device unavailable.";
       const friendly =
-        rawMsg.toLowerCase().includes("denied") || rawMsg.toLowerCase().includes("permission")
+        mode === "mic" && (rawMsg.toLowerCase().includes("denied") || rawMsg.toLowerCase().includes("permission"))
           ? "Microphone access was refused, so the instrument went back to the silent synthetic voice."
-          : rawMsg;
+          : mode === "stream" && (rawMsg.toLowerCase().includes("denied") || rawMsg.toLowerCase().includes("permission") || rawMsg.toLowerCase().includes("cancel"))
+            ? "Tab sharing was cancelled, so the instrument stayed on the synthetic voice."
+            : rawMsg;
       set({
         sourceMode: "silent",
-        micStatus: mode === "mic" ? "error" : "idle",
-        micError: mode === "mic" ? friendly : null,
+        micStatus: mode === "mic" || mode === "stream" ? "error" : "idle",
+        micError: mode === "mic" || mode === "stream" ? friendly : null,
       });
     }
   },
@@ -268,7 +355,58 @@ export const useLabStore = create<LabState>((set, get) => ({
   toggleFreeze: () => {
     const next = !get().frozen;
     labRuntime.setFrozen(next);
-    set({ frozen: next });
+    set({ frozen: next, bypassedStage: null });
+  },
+
+  setTraceOpen: (traceOpen) => {
+    if (traceOpen && !get().frozen) {
+      labRuntime.setFrozen(true);
+      set({ traceOpen: true, frozen: true, bypassedStage: null });
+    } else {
+      set({ traceOpen });
+    }
+  },
+
+  setTraceStage: (stage) => {
+    set({ traceStage: Math.max(1, Math.min(8, stage)) });
+  },
+
+  stepTraceStage: (delta) => {
+    const cur = get().traceStage;
+    const next = ((cur - 1 + delta + 8) % 8) + 1;
+    set({ traceStage: next });
+  },
+
+  captureAndTrace: () => {
+    const ctrl = labRuntime.getController();
+    if (ctrl && get().frozen) {
+      // Unfreeze, advance one live tick on the current synth/mic/stream buffer, then re-freeze
+      labRuntime.setFrozen(false);
+    }
+    labRuntime.captureNewSlice();
+    set({ frozen: true, traceOpen: true, bypassedStage: null, recomputeCount: get().recomputeCount + 1 });
+  },
+
+  toggleBypassStage: (stage) => {
+    const currentBypass = get().bypassedStage;
+    const base = labRuntime.getBaselineOptions();
+    if (currentBypass === stage) {
+      get().updateAnalyzerOptions({ ...base });
+      set({ bypassedStage: null });
+      return;
+    }
+    if (!get().frozen) {
+      labRuntime.setFrozen(true);
+      set({ frozen: true });
+    }
+    if (stage === 2) {
+      get().updateAnalyzerOptions({ preEmphasis: 0 });
+    } else if (stage === 3) {
+      get().updateAnalyzerOptions({ windowType: "rectangular" });
+    } else if (stage === 6) {
+      get().updateAnalyzerOptions({ lpcOrder: 4 });
+    }
+    set({ bypassedStage: stage });
   },
 
   selectTarget: (vowelId, syncSynth = false) => {
@@ -284,10 +422,18 @@ export const useLabStore = create<LabState>((set, get) => ({
         };
         ctrl.setSettings(nextSynth);
         set({ targetId: target.id, synth: nextSynth });
+        if (labRuntime.isFrozen()) {
+          labRuntime.recomputeFrozen({ ...get().analyzerOptions, target });
+          set({ recomputeCount: get().recomputeCount + 1 });
+        }
         return;
       }
     }
     set({ targetId: target.id });
+    if (labRuntime.isFrozen()) {
+      labRuntime.recomputeFrozen({ ...get().analyzerOptions, target });
+      set({ recomputeCount: get().recomputeCount + 1 });
+    }
   },
 
   updateSynth: (patch) => {
@@ -307,7 +453,12 @@ export const useLabStore = create<LabState>((set, get) => ({
     const next = { ...get().analyzerOptions, ...patch };
     const ctrl = labRuntime.getController();
     if (ctrl) ctrl.setOptions(next);
-    set({ analyzerOptions: next });
+    if (labRuntime.isFrozen()) {
+      labRuntime.recomputeFrozen({ ...next, target: findVowel(get().targetId) });
+      set({ analyzerOptions: next, recomputeCount: get().recomputeCount + 1 });
+    } else {
+      set({ analyzerOptions: next });
+    }
   },
 
   setVolume: (volume) => {
@@ -331,6 +482,7 @@ export const useLabStore = create<LabState>((set, get) => ({
     labRuntime.setFrozen(false);
     set({
       frozen: false,
+      bypassedStage: null,
       targetId: DEFAULT_TARGET.id,
       synth,
       analyzerOptions: opts,

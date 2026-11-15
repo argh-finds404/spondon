@@ -67,6 +67,40 @@ export interface TargetMatch {
   guidance: string;
 }
 
+export interface TracePole {
+  re: number;
+  im: number;
+  radius: number;
+  anglePi: number;
+  freqHz: number;
+  bandwidthHz: number;
+  selectedAs: "F1" | "F2" | "F3" | null;
+}
+
+/** Intermediate per-stage arrays captured on every frame for interactive signal tracing. */
+export interface StageTraceBuffers {
+  /** 512 samples after ~12 kHz decimation, before DC removal and pre-emphasis. */
+  rawDecimated: Float32Array;
+  /** 512 samples after DC removal and y[n] = x[n] - alpha * x[n-1], before windowing. */
+  preEmphasized: Float32Array;
+  /** 512 samples of the active window curve w[n]. */
+  windowWeights: Float32Array;
+  /** 512 samples of xw[n] = preEmphasized[n] * w[n]. */
+  windowed: Float32Array;
+  /** First 256 lags of the McLeod Pitch Method NSDF curve n(τ). */
+  nsdfCurve: Float32Array;
+  /** Refined fundamental lag τ_peak in decimated samples (0 when unvoiced). */
+  peakLagTau: number;
+  /** Autocorrelation lags R[0..p] fed into Levinson-Durbin. */
+  autocorrCoeffs: number[];
+  /** Predictor coefficients a[1..p] from Levinson-Durbin. */
+  lpcCoeffs: number[];
+  /** All-pole filter gain G from Levinson-Durbin. */
+  lpcGain: number;
+  /** Upper-half-plane roots of A(z) with radius, angle, frequency, bandwidth and formant selection. */
+  allPoles: TracePole[];
+}
+
 export interface DSPFrameTelemetry {
   timestampMs: number;
   /** Rate of the incoming audio. */
@@ -90,4 +124,5 @@ export interface DSPFrameTelemetry {
   formants: FormantPeak;
   stability: VoiceStabilityMetrics;
   activeTargetMatch: TargetMatch;
+  stageBuffers: StageTraceBuffers;
 }

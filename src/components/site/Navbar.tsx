@@ -20,6 +20,7 @@ export const SOURCE_LABEL = {
   silent: "Synthetic voice",
   synth: "Synthetic voice, playing",
   mic: "Microphone",
+  stream: "Tab / YouTube stream",
 } as const;
 
 /**
@@ -62,7 +63,7 @@ export function Navbar() {
         <div className="ml-auto flex h-full items-center gap-3 lg:gap-5">
           <div data-ui className="flex h-full items-center gap-3">
             <span className="hidden items-center gap-2 lg:flex">
-              <span className={`mark ${sourceMode === "mic" ? "bg-accent!" : ""}`} />
+              <span className={`mark ${sourceMode === "mic" || sourceMode === "stream" ? "bg-accent!" : ""}`} />
               <span className="ui-label">{SOURCE_LABEL[sourceMode]}</span>
             </span>
             <Trace kind="mini" bare label="Waveform of the signal now being analysed" className="hidden h-6 w-24 sm:block" />

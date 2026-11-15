@@ -63,4 +63,42 @@ describe("SPONDON lab runtime & asset integrity", () => {
     expect(useLabStore.getState().targetId).toBe("aa");
     expect(useLabStore.getState().synth.tour).toBe(true);
   });
+
+  it("re-runs VoiceAnalyzer on the captured slice when parameters or stage bypass change while frozen", () => {
+    const ctrl = labRuntime.getController();
+    expect(ctrl).not.toBeNull();
+    if (!ctrl) return;
+
+    // Feed one voiced frame from the controller's synthetic voice buffer
+    const raw = ctrl.getCurrentRawSlice();
+    ctrl.analyzer.process(raw, 500);
+
+    const store = useLabStore.getState();
+    store.captureAndTrace();
+    expect(useLabStore.getState().frozen).toBe(true);
+    expect(useLabStore.getState().traceOpen).toBe(true);
+
+    const baseSnap = labRuntime.getBaselineTelemetry();
+    const baseWindow0 = baseSnap.stageBuffers.windowWeights[0];
+    expect(baseWindow0).toBeCloseTo(0.08, 4);
+
+    // Change window to rectangular and LPC order to 18 while frozen
+    store.updateAnalyzerOptions({ windowType: "rectangular", lpcOrder: 18 });
+    expect(useLabStore.getState().recomputeCount).toBeGreaterThan(0);
+
+    const recomputed = labRuntime.getActiveTelemetry();
+    expect(recomputed.timestampMs).toBe(baseSnap.timestampMs);
+    expect(recomputed.stageBuffers.windowWeights[0]).toBeCloseTo(1.0, 4);
+    expect(recomputed.stageBuffers.lpcCoeffs.length).toBe(18);
+    // Baseline remains untouched for BEFORE vs AFTER comparison
+    expect(labRuntime.getBaselineTelemetry().stageBuffers.windowWeights[0]).toBeCloseTo(0.08, 4);
+    expect(labRuntime.getBaselineTelemetry().stageBuffers.lpcCoeffs.length).toBe(12);
+
+    // Toggle stage 2 bypass (preEmphasis = 0)
+    store.toggleBypassStage(2);
+    expect(useLabStore.getState().bypassedStage).toBe(2);
+    expect(useLabStore.getState().analyzerOptions.preEmphasis).toBe(0);
+
+    store.resetCalibration();
+  });
 });
