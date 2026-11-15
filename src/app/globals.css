@@ -1,26 +1,508 @@
 @import "tailwindcss";
 
+/*
+ * SPONDON visual system.
+ * Carbon ground, ivory ink, one orange. Cyan and emerald are data hues only:
+ * cyan draws the LPC envelope, emerald marks a target lock. Nothing else may use them.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #08090c;
+  --surface: #101217;
+  --raised: #181b22;
+  --line: #262a33;
+  --control: #3d4350;
+  --ink: #f3f0e6;
+  --muted: #8a909e;
+  --accent: #ff5500;
+  --accent-ink: #08090c;
+  --lpc: #00e5ff;
+  --lock: #10b981;
+  --field: #f3f0e6;
+  --field-ink: #08090c;
+  --field-muted: #4a4e58;
+
+  --margin: clamp(16px, 2.2vw, 32px);
+  --gutter: clamp(16px, 1.7vw, 24px);
+  --section: clamp(96px, 12vw, 200px);
+  --radius: 2px;
+  --nav-h: 56px;
+
+  --step-small: clamp(0.8125rem, 0.79rem + 0.1vw, 0.875rem);
+  --step-body: clamp(1.0625rem, 1rem + 0.25vw, 1.1875rem);
+  --step-lead: clamp(1.25rem, 1.1rem + 0.7vw, 1.625rem);
+  --step-head: clamp(2rem, 1.3rem + 3.2vw, 4rem);
+  --step-display: clamp(3.25rem, 1rem + 9.6vw, 10.5rem);
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-control: var(--control);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-lpc: var(--lpc);
+  --color-lock: var(--lock);
+  --color-field: var(--field);
+  --color-field-ink: var(--field-ink);
+  --color-field-muted: var(--field-muted);
+  --font-sans: var(--font-latin), var(--font-bangla), system-ui, sans-serif;
+  --font-mono: var(--font-figures), ui-monospace, "Cascadia Mono", monospace;
+  --breakpoint-xs: 30rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  scroll-padding-top: calc(var(--nav-h) + 24px);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  font-size: var(--step-body);
+  line-height: 1.5;
+  overflow-x: clip;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.on-field :focus-visible,
+.on-accent :focus-visible {
+  outline-color: var(--field-ink);
+}
+
+@layer components {
+/* ── Frame ─────────────────────────────────────────────────────────── */
+
+.wrap {
+  padding-inline: var(--margin);
+}
+
+.grid12 {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  column-gap: var(--gutter);
+}
+
+.section {
+  padding-block: calc(var(--section) / 2);
+}
+
+/* ── Type: five steps, one family across Latin and Bangla ──────────── */
+
+.t-display {
+  font-size: var(--step-display);
+  font-weight: 600;
+  font-stretch: 108%;
+  line-height: 0.92;
+  letter-spacing: -0.035em;
+}
+
+.t-head {
+  font-size: var(--step-head);
+  font-weight: 550;
+  font-stretch: 106%;
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.t-lead {
+  font-size: var(--step-lead);
+  font-weight: 450;
+  line-height: 1.3;
+  letter-spacing: -0.012em;
+  text-wrap: pretty;
+}
+
+.t-body {
+  font-size: var(--step-body);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.t-small {
+  font-size: var(--step-small);
+  line-height: 1.45;
+}
+
+.bn {
+  font-family: var(--font-bangla), var(--font-latin), sans-serif;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.prose-measure {
+  max-width: 62ch;
+}
+
+/* ── Controls: one shape, square ──────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6em;
+  min-height: 44px;
+  padding: 0 1.15em;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--step-small);
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+  transition:
+    transform 160ms var(--ease-out),
+    background-color 160ms ease;
+}
+
+.btn:hover {
+  background: #ff6a1f;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-quiet {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.btn-quiet:hover {
+  background: #22262f;
+}
+
+.btn-ink {
+  background: var(--field-ink);
+  color: var(--field);
+}
+
+.btn-ink:hover {
+  background: #1b1e25;
+}
+
+.link {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  transition: text-decoration-color 160ms ease;
+}
+
+.link:hover {
+  text-decoration-color: currentColor;
+}
+
+/* ── Instrument fragments. Inside [data-ui] the product's own conventions apply. ── */
+
+[data-ui] {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.ui-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.ui-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ui-fig {
+  font-family: var(--font-mono);
+  font-stretch: 87%;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* The one selection mark of the instrument: an accent line as wide as its label. */
+.ui-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  color: var(--muted);
+  transition: color 140ms ease;
+}
+
+.ui-tab:hover,
+.ui-tab[aria-pressed="true"],
+.ui-tab[aria-selected="true"],
+.ui-tab[aria-current="page"],
+.ui-tab[aria-checked="true"],
+.ui-tab[data-on="true"] {
+  color: var(--ink);
+}
+
+.ui-tab::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 200ms var(--ease-out);
+}
+
+.ui-tab[aria-pressed="true"]::after,
+.ui-tab[aria-selected="true"]::after,
+.ui-tab[aria-current="page"]::after,
+.ui-tab[aria-checked="true"]::after,
+.ui-tab[data-on="true"]::after {
+  transform: scaleX(1);
+}
+
+.ui-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+input[type="range"].ui-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"].ui-slider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--control);
+}
+
+input[type="range"].ui-slider::-moz-range-track {
+  height: 2px;
+  background: var(--control);
+}
+
+input[type="range"].ui-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 18px;
+  margin-top: -8px;
+  background: var(--ink);
+  border-radius: 1px;
+}
+
+input[type="range"].ui-slider::-moz-range-thumb {
+  width: 8px;
+  height: 18px;
+  background: var(--ink);
+  border: 0;
+  border-radius: 1px;
+}
+
+input[type="range"].ui-slider:hover::-webkit-slider-thumb,
+input[type="range"].ui-slider:focus-visible::-webkit-slider-thumb {
+  background: var(--accent);
+}
+
+input[type="range"].ui-slider:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Provenance marks: shape, not hue, says where a number comes from. */
+.mark {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--ink);
+  border-radius: 50%;
+}
+
+.mark-derived {
+  border-radius: 0;
+  transform: rotate(45deg) scale(0.86);
+}
+
+.mark-mapped {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.mark-reference {
+  background: var(--muted);
+  border-radius: 0;
+  height: 2px;
+}
+}
+
+/* ── Equations and code ───────────────────────────────────────────── */
+
+math {
+  font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", math;
+  font-size: 1.12em;
+}
+
+math[display="block"] {
+  margin: 0;
+  text-align: left;
+}
+
+.eq {
+  overflow-x: auto;
+  padding: 18px 20px;
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+pre,
+code {
+  font-family: var(--font-mono);
+  font-stretch: 87%;
+}
+
+pre {
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-x: auto;
+  tab-size: 2;
+}
+
+:not(pre) > code {
+  font-size: 0.86em;
+  padding: 0.1em 0.35em;
+  background: var(--raised);
+  border-radius: var(--radius);
+}
+
+/* ── Motion. Content is only hidden once the script has said it is running. ── */
+
+.js .reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition:
+    opacity 700ms var(--ease-out),
+    transform 700ms var(--ease-out);
+  transition-delay: calc(var(--i, 0) * 80ms);
+}
+
+.js .reveal.is-in {
+  opacity: 1;
+  transform: none;
+}
+
+@keyframes drift {
+  from {
+    transform: scale(1.02) translate3d(0, 0, 0);
+  }
+  to {
+    transform: scale(1.08) translate3d(-1.2%, -1%, 0);
+  }
+}
+
+.drift {
+  animation: drift 18s ease-in-out infinite alternate;
+}
+
+/* The signal-chain drum: ten words on a cylinder that the scroll turns. */
+.drum-scene {
+  perspective: 1400px;
+  perspective-origin: 30% 50%;
+}
+
+.drum {
+  --pitch: 1.12em;
+  --faces: 10;
+  /* radius of a regular decagon whose side is one pitch */
+  --r: calc(var(--pitch) * 1.5388);
+  position: relative;
+  height: var(--pitch);
+  transform-style: preserve-3d;
+  transform: translateZ(calc(var(--r) * -1)) rotateX(calc(var(--turn, 0) * 36deg));
+  will-change: transform;
+}
+
+.drum-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  backface-visibility: hidden;
+  transform: rotateX(calc(var(--k) * -36deg)) translateZ(var(--r));
+  color: var(--muted);
+  transition: color 240ms ease;
+  white-space: nowrap;
+}
+
+.drum-face[data-active="true"] {
+  color: var(--ink);
+}
+
+dialog.sheet {
+  width: 100vw;
+  max-width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+dialog.sheet::backdrop {
+  background: var(--bg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .js .reveal {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Scrollbars that belong to the chassis. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--control) transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }

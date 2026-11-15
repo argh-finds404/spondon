@@ -1,6 +1,6 @@
 [
  {
-  "file": "assets/chladni-plate-10.jpg",
+  "file": "/world/chladni-plate-10.jpg",
   "media": "image",
   "ref": "commons:54267767",
   "title": "Chladni plate 10",
@@ -24,7 +24,7 @@
   "saved": "2026-11-14T20:06:02.239Z"
  },
  {
-  "file": "assets/chladni-1.jpg",
+  "file": "/world/chladni-1.jpg",
   "media": "image",
   "ref": "commons:121319577",
   "title": "Chladni-1",
@@ -46,7 +46,7 @@
   "saved": "2026-11-14T20:06:04.923Z"
  },
  {
-  "file": "assets/koenig-apparatus-after-helmholtz-ten-resonators-1889.jpg",
+  "file": "/world/koenig-apparatus-after-helmholtz-ten-resonators-1889.jpg",
   "media": "image",
   "ref": "commons:144654411",
   "title": "Koenig apparatus after Helmholtz (ten resonators), 1889",
@@ -68,7 +68,7 @@
   "saved": "2026-11-14T20:06:08.104Z"
  },
  {
-  "file": "assets/a-selection-of-helmholtz-resonators-from-1870.jpg",
+  "file": "/world/a-selection-of-helmholtz-resonators-from-1870.jpg",
   "media": "image",
   "ref": "openverse:630e01b4-1da3-4c9b-83e2-0dc82fd1807f",
   "title": "A selection of Helmholtz resonators from 1870, Hunterian Museum, Glasgow",
@@ -92,7 +92,7 @@
   "saved": "2026-11-14T20:06:19.150Z"
  },
  {
-  "file": "assets/chladni-plate-04.jpg",
+  "file": "/world/chladni-plate-04.jpg",
   "media": "image",
   "ref": "openverse:fa400730-608f-48f2-bc02-6bf8668a943f",
   "title": "Chladni plate 04",
@@ -116,9 +116,9 @@
   "saved": "2026-11-14T20:06:28.771Z"
  },
  {
-  "file": "assets/prato-de-chladni-14.webm",
+  "file": "/world/prato-de-chladni-14.webm",
   "media": "video",
-  "poster": "assets/prato-de-chladni-14-poster.jpg",
+  "poster": "/world/prato-de-chladni-14-poster.jpg",
   "ref": "commons:57518444",
   "title": "Prato de Chladni 14",
   "creator": "Exhibit made by Estes Objethos Atelier, video by Rodrigo Tetsuo Argenton",

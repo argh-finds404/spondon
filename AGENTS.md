@@ -16,6 +16,7 @@ Audio signal → preprocessing → windowing → FFT → pitch detection → LPC
   - `src/lib/dsp/**`
   - `src/types/dsp.ts`
   - `src/workers/**`
+  - `src/app/api/**` (the HTTP API: `/api/vowels`, `/api/synth`, `/api/analyze`; an exception to the frontend's `src/app/**`)
 - **Frontend / visual agent owns**:
   - `src/app/**`
   - `src/components/**`
@@ -44,6 +45,8 @@ npx tsc --noEmit
 npx vitest run
 ```
 Do not claim success if any of these fail.
+
+On Windows, run these from PowerShell (or `cd "D:/SPONDON"` in Git Bash): under Git Bash's lowercase `/d/SPONDON` path Vitest loads two copies of itself and every suite fails with "Cannot read properties of undefined (reading 'config')".
 
 ## SECURITY
 Never commit:
