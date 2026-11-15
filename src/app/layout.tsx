@@ -57,7 +57,14 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" suppressHydrationWarning className={`${latin.variable} ${bangla.variable} ${figures.variable}`}>
+    // data-scroll-behavior: the page scrolls smoothly within itself, but Next jumps instantly to the top on a
+    // route change. Without it a smooth glide toward the new page's footer can win, and the page opens at its end.
+    <html
+      lang="en"
+      data-scroll-behavior="smooth"
+      suppressHydrationWarning
+      className={`${latin.variable} ${bangla.variable} ${figures.variable}`}
+    >
       <body>
         {/* Sets the theme, and marks script as running, before anything is painted. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />

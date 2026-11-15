@@ -10,7 +10,11 @@ const LABEL = "Chladni figure for the vowel now being analysed, drawn in sand";
 // three.js is only fetched once a plate is about to be seen.
 const Plate3D = dynamic(() => import("./Plate3D"), {
   ssr: false,
-  loading: () => <Trace kind="figure" bare label={LABEL} className="absolute inset-[9%]" />,
+  loading: () => (
+    <div className="absolute inset-[9%]">
+      <Trace kind="figure" bare label={LABEL} className="h-full w-full" />
+    </div>
+  ),
 });
 
 let webgl: boolean | null = null;
@@ -49,10 +53,14 @@ export function PlateStage({ className, ...plate }: Plate3DProps & { className?:
     <div ref={ref} role="img" aria-label={LABEL} className={`relative overflow-hidden ${className ?? ""}`}>
       {mode === "3d" && (
         <div className="absolute inset-0">
-          <Plate3D grains={typeof window !== "undefined" && window.innerWidth < 640 ? 9000 : 16000} {...plate} />
+          <Plate3D grains={typeof window !== "undefined" && window.innerWidth < 640 ? 6000 : 10000} {...plate} />
         </div>
       )}
-      {mode === "2d" && <Trace kind="figure" bare label={LABEL} className="absolute inset-[9%]" />}
+      {mode === "2d" && (
+        <div className="absolute inset-[9%]">
+          <Trace kind="figure" bare label={LABEL} className="h-full w-full" />
+        </div>
+      )}
     </div>
   );
 }

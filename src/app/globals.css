@@ -505,24 +505,6 @@ body {
     transition-duration: 90ms;
   }
 
-  /* The hero's three instruments, standing in space. */
-  .deck {
-    perspective: 1500px;
-    perspective-origin: 50% 42%;
-  }
-
-  @media (min-width: 64rem) {
-    .deck-wing-l {
-      transform: translate3d(9%, 0, -150px) rotateY(24deg);
-      transform-origin: right center;
-    }
-
-    .deck-wing-r {
-      transform: translate3d(-9%, 0, -150px) rotateY(-24deg);
-      transform-origin: left center;
-    }
-  }
-
   /* A row you move sideways through. */
   .rail {
     display: flex;

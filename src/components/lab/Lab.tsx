@@ -297,110 +297,110 @@ interface StageSpec {
 const TRACE_STAGES: readonly StageSpec[] = [
   {
     id: 1,
-    pill: "1. VOICE PCM",
-    title: "Stage 1 — Acoustic Pressure to 12 kHz Discrete PCM",
+    pill: "1. Samples",
+    title: "From sound pressure to 12,000 numbers a second",
     kind: "measured",
-    beforeTitle: "BEFORE · Continuous Incoming Waveform",
-    beforeSub: "Raw buffer x(t) arriving from Web Audio AnalyserNode at native device rate",
+    beforeTitle: "Before: the incoming wave",
+    beforeSub: "The newest samples from the browser's audio graph, at the device rate (usually 48 kHz)",
     beforeTrace: "voice",
-    afterTitle: "AFTER · Decimated 12 kHz Stems x[n]",
-    afterSub: "512 discrete samples (42.7 ms window, Δt = 83.3 µs, Nyquist = 6 000 Hz)",
+    afterTitle: "After: 512 samples at 12 kHz",
+    afterSub: "A 42.7 ms frame, one sample every 83.3 µs, Nyquist frequency 6 kHz",
     afterTrace: "samples",
-    why: "Decimating from 48 kHz to fs = 12 000 Hz concentrates all 512 samples and LPC poles inside 0–6 kHz, where human vowel formants F1–F3 actually live. Without decimation, a 12-pole LPC model wastes two-thirds of its degrees of freedom fitting empty air between 6 kHz and 24 kHz.",
+    why: "The first three formants all lie below about 4 kHz. Low-pass filtering and keeping one sample in four puts every bin of the spectrum and every pole of the model inside 0 to 6 kHz, where the vowel information is, and cuts the arithmetic to a quarter.",
   },
   {
     id: 2,
-    pill: "2. PREP & PRE-EMPHASIS",
-    title: "Stage 2 — DC Removal & First-Order Pre-Emphasis Filter",
+    pill: "2. Pre-emphasis",
+    title: "Removing the offset and lifting the highs",
     kind: "measured",
-    beforeTitle: "BEFORE · Raw Decimated Slice rawDecimated[n]",
-    beforeSub: "Steep −12 dB/octave glottal spectral tilt dominates high-frequency formants",
+    beforeTitle: "Before: the decimated frame",
+    beforeSub: "Voiced speech loses about 6 dB per octave, so the upper formants are much weaker than F1",
     beforeTrace: "rawDecimated",
-    afterTitle: "AFTER · Pre-Emphasized y[n] = x[n] − α·x[n−1]",
-    afterSub: "+6 dB/octave high-pass boost flattens glottal roll-off so F2 & F3 stand out",
+    afterTitle: "After: y[n] = x[n] − α·x[n−1]",
+    afterSub: "A one-tap high-pass filter that adds about 6 dB per octave and flattens the slope",
     afterTrace: "preEmphasized",
-    bypassLabel: "✕ BYPASS STAGE (α = 0)",
-    why: "Human vocal fold vibration falls off at −12 dB/octave, leaving F2 and F3 up to 30 dB weaker than F1. If you bypass pre-emphasis (α = 0), Levinson–Durbin spends almost all its poles modeling the low-frequency glottal slope and F2/F3 collapse or vanish.",
+    bypassLabel: "Bypass this stage (α = 0)",
+    why: "Without pre-emphasis the model spends its poles describing the overall downward slope of the voice instead of its resonances. Bypass it and watch F2 and F3 broaden or move.",
   },
   {
     id: 3,
-    pill: "3. WINDOW w[n]",
-    title: "Stage 3 — Tapered Windowing xw[n] = y[n] · w[n]",
+    pill: "3. Window",
+    title: "Tapering the frame: xw[n] = y[n] · w[n]",
     kind: "measured",
-    beforeTitle: "BEFORE · Unwindowed Pre-Emphasized y[n]",
-    beforeSub: "Sharp boundary cliffs at n = 0 and n = 511 act like an impulse step",
+    beforeTitle: "Before: the frame cut out bluntly",
+    beforeSub: "The signal stops abruptly at n = 0 and n = 511",
     beforeTrace: "preEmphasized",
-    afterTitle: "AFTER · Windowed Frame xw[n] = y[n] · w[n]",
-    afterSub: "Smooth bell taper brings both frame edges to zero before FFT & autocorrelation",
+    afterTitle: "After: the windowed frame",
+    afterSub: "Both ends are brought smoothly to zero before the FFT and the autocorrelation",
     afterTrace: "windowed",
-    bypassLabel: "✕ BYPASS STAGE (Rectangular)",
-    why: "Slicing 512 samples out of a continuous voice wave leaves abrupt discontinuities at n = 0 and n = 511. If you bypass tapered windowing (Rectangular w[n] = 1), those sharp edges spray −13 dB spectral leakage across the entire spectrum and bias autocorrelation lags.",
+    bypassLabel: "Bypass this stage (rectangular)",
+    why: "An abrupt cut acts like a sharp edge in time, and its energy spreads across the whole spectrum. A rectangular window's highest sidelobe is only 13 dB down; Hamming brings it to about 43 dB down, at the cost of a wider main lobe.",
   },
   {
     id: 4,
-    pill: "4. 1024-pt FFT",
-    title: "Stage 4 — Zero-Padded 1024-Point Radix-2 Cooley–Tukey FFT",
+    pill: "4. FFT",
+    title: "A 1,024-point Fourier transform",
     kind: "measured",
-    beforeTitle: "BEFORE · Windowed Time-Domain Slice xw[n]",
-    beforeSub: "512 tapered samples padded with 512 trailing zeros (N = 1024)",
+    beforeTitle: "Before: the windowed frame",
+    beforeSub: "512 tapered samples, padded with 512 zeros to N = 1,024",
     beforeTrace: "windowed",
-    afterTitle: "AFTER · Log-Power Spectrum |X[k]| dB & Harmonics",
-    afterSub: "512 bins from 0 to 6 kHz (Δf = 11.72 Hz/bin) with glottal harmonic peaks ▲ k·F0",
+    afterTitle: "After: the magnitude spectrum, in dB",
+    afterSub: "512 bins from 0 to 6 kHz, 11.7 Hz apart, with the harmonics of the voice marked",
     afterTrace: "fftHarmonics",
-    why: "The 1024-point FFT decomposes the time wave into a fine comb of glottal harmonics spaced every F0 Hz. However, the FFT alone cannot directly give you formants—picking the tallest FFT bin picks a pitch harmonic k·F0 rather than the vocal tract resonance center.",
+    why: "The spectrum shows a comb of harmonics, one every F0 hertz. The formants are the hills the comb rides on, not its tallest teeth: picking the highest bin finds a harmonic, not a resonance. That is why the next stages fit a model.",
   },
   {
     id: 5,
-    pill: "5. PITCH / F0 (NSDF)",
-    title: "Stage 5 — McLeod Normalized Square Difference Function (NSDF)",
+    pill: "5. Pitch",
+    title: "Finding the pitch: the McLeod method",
     kind: "measured",
-    beforeTitle: "BEFORE · Periodic Glottal Cycles in Time Domain",
-    beforeSub: "Repeating vocal-fold pitch periods T0 = 1 / F0 across the 42.7 ms frame",
+    beforeTitle: "Before: the repeating wave",
+    beforeSub: "One glottal pulse every T0 = 1 / F0 seconds",
     beforeTrace: "pitch",
-    afterTitle: "AFTER · NSDF Curve n(τ) & Parabolic Peak τ_peak",
-    afterSub: "First major peak above 0.9·n_max pins fundamental period τ_peak → F0 = fs / τ_peak",
+    afterTitle: "After: the self-similarity curve n(τ)",
+    afterSub: "The first peak within 90% of the highest one gives the period; F0 = fs / τ",
     afterTrace: "nsdf",
-    why: "Time-domain zero-crossing counters fail whenever strong formants create multiple crossings per period. McLeod's NSDF normalizes autocorrelation energy at every lag τ ∈ [0, 255] into [−1, +1] and uses parabolic interpolation to lock onto F0 with sub-sample precision.",
+    why: "n(τ) compares the wave with itself shifted by τ samples and is normalised to lie between −1 and 1, whatever the loudness. Taking the first strong peak, not the highest, avoids reading an octave too low. A parabola through the peak refines the period to a fraction of a sample.",
   },
   {
     id: 6,
-    pill: "6. LPC(p) ENVELOPE",
-    title: "Stage 6 — Autocorrelation & Levinson–Durbin All-Pole Envelope",
+    pill: "6. Envelope",
+    title: "Linear prediction: the all-pole envelope",
     kind: "derived",
-    beforeTitle: "BEFORE · Jagged FFT Harmonic Comb |X[k]|",
-    beforeSub: "Individual glottal harmonics obscure the underlying vocal-tract resonances",
+    beforeTitle: "Before: the jagged harmonic spectrum",
+    beforeSub: "The individual harmonics hide the shape of the vocal tract",
     beforeTrace: "fft",
-    afterTitle: "AFTER · Smooth All-Pole Envelope H(e^jω) over FFT",
-    afterSub: "Levinson–Durbin solves Toeplitz system R·a = r in O(p²) to fit vocal-tract filter",
+    afterTitle: "After: G / |A(e^jω)| over the spectrum",
+    afterSub: "Levinson–Durbin solves the Toeplitz system R·a = r in O(p²) steps",
     afterTrace: "spectrum",
-    bypassLabel: "✕ UNDER-FIT STAGE (Order p = 4)",
-    why: "Linear Predictive Coding separates the vocal tract filter H(z) from the glottal source by predicting each sample from the previous p samples. Lowering p to 4 under-fits and merges F1/F2 into a single blob; raising p to 24 over-fits and chases individual pitch harmonics.",
+    bypassLabel: "Under-fit this stage (order 4)",
+    why: "Each sample is predicted from the twelve before it. The weights that leave the smallest error describe an all-pole filter, a model of the tract without the source. With order 4 the model can draw only two peaks; with 24 it starts to follow individual harmonics.",
   },
   {
     id: 7,
-    pill: "7. Z-PLANE POLES",
-    title: "Stage 7 — Companion Matrix Eigenvalues & Complex Z-Plane Poles",
+    pill: "7. Poles",
+    title: "The poles: roots of A(z), found by Durand–Kerner iteration",
     kind: "derived",
-    beforeTitle: "BEFORE · Predictor Polynomial A(z) = 1 − ∑ a_k z^−k",
-    beforeSub: "LPC coefficients a[1..p] (cyan) and normalized autocorrelation R[1..p]/R[0] (faint)",
+    beforeTitle: "Before: the coefficients of A(z) = 1 − Σ a_k z^−k",
+    beforeSub: "LPC coefficients a[1..p] (cyan) and the normalised autocorrelation R[k]/R[0] (faint)",
     beforeTrace: "lpcCoeffs",
-    afterTitle: "AFTER · Complex Conjugate Roots z_k = r_k e^(±jθ_k)",
-    afterSub: "Pole angle θ_k gives frequency Hz; pole radius r_k gives bandwidth B = −(fs/π) ln r_k",
+    afterTitle: "After: the roots z_k = r_k e^(±jθ_k)",
+    afterSub: "The angle gives the frequency, F = θ·fs / 2π; the radius gives the bandwidth, B = −(fs/π) ln r",
     afterTrace: "zplane",
-    why: "Peaks on the LPC spectrum can still merge when two formants sit close together. Factoring A(z) = 0 into complex roots inside the unit circle reveals every resonance's exact pole angle (frequency) and radius (damping), keeping only upper-half-plane roots with B < 500 Hz as F1, F2, F3.",
+    why: "Two formants close together can merge into one peak of the envelope, but they stay two separate poles. Solving A(z) = 0 gives every resonance exactly. The first upper-half-plane poles in the ranges a vocal tract can produce, each narrower than 500 Hz, are taken as F1, F2 and F3.",
   },
   {
     id: 8,
-    pill: "8. FORMANTS & VOWEL",
-    title: "Stage 8 — Acoustic Vowel Space (F1, F2) & Chladni Nodal Mapping",
+    pill: "8. Vowel and figure",
+    title: "The vowel chart and the sand figure",
     kind: "mapped",
-    beforeTitle: "BEFORE · Extracted Formants (F1, F2, F3) in Vowel Space",
-    beforeSub: "Bark-scale psychoacoustic distance to 8 Bangla / IPA reference vowels",
+    beforeTitle: "Before: the formants on the vowel chart",
+    beforeSub: "Distance to the eight reference vowels, measured on the Bark scale of hearing",
     beforeTrace: "vowel",
-    afterTitle: "AFTER · Chladni Standing-Wave Plate C(x, y) = 0",
-    afterSub: "Deterministic bijective mapping: F1 → mode m, F2 → mode n on a square plate",
+    afterTitle: "After: the Chladni figure C(x, y) = 0",
+    afterSub: "A drawing rule: F1 chooses the mode number m, F2 chooses n, on a square plate",
     afterTrace: "plate",
-    why: "Tongue height controls pharyngeal cavity volume (F1, vertical axis) while tongue advancement controls oral cavity length (F2, horizontal axis). Mapping (F1, F2) into Bark space and Chladni nodal numbers (m, n) turns an invisible acoustic resonance into a reproducible geometric fingerprint.",
+    why: "F1 falls as the tongue rises and F2 rises as it moves forward, so the two formants place a vowel on a map of the mouth. The figure is not a measurement: it gives each vowel a shape you can recognise, the way Chladni's sand made a plate's vibration visible.",
   },
 ] as const;
 
@@ -892,7 +892,7 @@ function LiveInputMonitor() {
         status.textContent = "▶ PLAYING YOUR 3s VOICE RECORDING";
         detail.textContent = near
           ? `Looping your recorded voice · F0 ${Math.round(t.stability.f0Hz)} Hz · F1 ${Math.round(t.formants.f1)} Hz · F2 ${Math.round(t.formants.f2)} Hz · ${vowelGlyph(near)} /${near.symbol}/`
-          : "Looping and analyzing your 3-second recorded clip";
+          : "Looping and analysing your 3-second recording";
       } else if (isFrozen) {
         status.textContent = "Paused on the captured voice";
         detail.textContent = `F0 ${Math.round(t.stability.f0Hz)} Hz · F1 ${Math.round(t.formants.f1)} Hz · F2 ${Math.round(t.formants.f2)} Hz`;
@@ -912,7 +912,7 @@ function LiveInputMonitor() {
         detail.textContent =
           sourceMode === "mic"
             ? "Say 'Aaaa' into your mic (charts auto-hold your vowel when you stop) or click Record 3s Voice"
-            : "Play audio in your shared browser tab to see live formants";
+            : "Play sound in the shared tab to see its formants";
       }
     });
   }, [sourceMode]);
@@ -948,7 +948,7 @@ function LiveInputMonitor() {
 
         {/* Center: Live Mic Level Bar */}
         <div className="flex min-w-[190px] flex-1 items-center gap-2.5">
-          <span className="text-[12px] font-medium whitespace-nowrap text-muted">Mic Level</span>
+          <span className="text-[12px] font-medium whitespace-nowrap text-muted">Level</span>
           <div
             className="relative h-3 flex-1 overflow-hidden border border-line bg-surface rounded-(--radius-sm)"
             title="Live microphone input level"
@@ -976,8 +976,8 @@ function LiveInputMonitor() {
               {isRecordingClip
                 ? `● Recording… ${Math.max(0, 3 * (1 - recordingProgress)).toFixed(1)}s`
                 : hasRecordedClip
-                  ? "● Re-record 3s Voice"
-                  : "● Record 3s Voice"}
+                  ? "Record again"
+                  : "Record 3 seconds"}
             </button>
           )}
 
@@ -992,7 +992,7 @@ function LiveInputMonitor() {
                   : "border border-line bg-surface text-ink hover:border-accent"
               }`}
             >
-              {playingRecordedClip ? "↺ Switch to Live Mic" : "▶ Play my 3s recording"}
+              {playingRecordedClip ? "Back to the live microphone" : "Play my recording"}
             </button>
           )}
 
@@ -1001,7 +1001,7 @@ function LiveInputMonitor() {
             onClick={() => (frozen ? toggleFreeze() : captureAndTrace())}
             className="border border-line bg-surface px-2.5 py-1.5 text-[12px] font-medium text-ink hover:border-accent rounded-(--radius-sm)"
           >
-            {frozen ? "Resume Live" : "Inspect & Trace Voice"}
+            {frozen ? "Resume live" : "Hold and trace"}
           </button>
         </div>
       </div>

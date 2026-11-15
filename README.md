@@ -6,7 +6,25 @@ A real-time acoustic DSP laboratory that runs in the browser. Speak (or let the 
 
 > Educational and scientific visualisation. SPONDON is not a medical or diagnostic device.
 
-<!-- PAGES -->
+## What is in it
+
+| Page | What it is for |
+| --- | --- |
+| `/` | A keyboard of vowels: press a key (or A S D F G H J K) to hear a vowel and watch its figure form on the orange plate, or sing into it. Then a bench of nine live instruments and the signal chain turned by the scroll |
+| `/lab` | The instrument. Vowel chart, 3D sand plate, spectrum with LPC envelope, Z-plane, scope, spectrogram, pitch track and every reading. Built-in voice, test signals, microphone or another tab's audio; freeze, trace a frame stage by stage, and five "break the signal" experiments |
+| `/vowels` | The eight reference vowels: where each sits, how the mouth makes it, how it sounds, its figure |
+| `/compare` | Record takes or open audio files, keep them in this browser with notes, and lay one over another |
+| `/classroom` | Seven units for a first signals course (sampling, Fourier series, windows and leakage, the spectrogram, autocorrelation pitch, linear prediction, the z-plane), each with a live signal, a question and a folded answer |
+| `/guide` | How to use the lab, step by step, with troubleshooting |
+| `/method` | Every stage of the analysis with its equation and a live trace |
+| `/developers` | The HTTP API, with a live synthesise-then-analyse round trip |
+| `/archive`, `/privacy` | Where the idea comes from, with picture credits; what is and is not kept |
+
+Light and dark themes follow the system setting until you choose one with the toggle in the bar.
+
+### Test signals
+
+Besides the synthetic voice, the built-in source can be a sine, square, sawtooth or triangle wave, two tones 20 dB apart, a 100 Hz–3 kHz sweep, white noise or an impulse train (`src/lib/dsp/signals.ts`). The periodic ones are built from harmonics up to 8 kHz, so they are band-limited, and their spectra are known in advance. Open one directly with `/lab?signal=square&hz=200`; `/lab?vowel=ii` opens on a vowel and `/lab?exp=3` on an experiment.
 
 ## Measured, derived, mapped
 
@@ -56,6 +74,10 @@ The figure is the standing wave $C(x, y) = \cos(n\pi x)\cos(m\pi y) - \cos(m\pi 
 - Pitch within 1.5 Hz from 95 to 310 Hz, with no octave error when the fundamental is weak.
 - A Levinson–Durbin solution, a polynomial's roots and a pole-to-formant conversion against values worked by hand.
 - The API end to end: a WAV from `/api/synth` sent to `/api/analyze` comes back as the vowel it was.
+- Each test signal has the spectrum theory says it should: a square wave's odd harmonics at 1/k, a triangle's at 1/k², a flat comb for the impulse train, nothing above 8 kHz.
+- The local takes vault saves, lists, updates and deletes takes, and round-trips its export format.
+
+80 tests in all, across the DSP engine, the API, the lab's runtime and the takes vault.
 
 **Known limitation.** Jitter and shimmer come from peak picking on the waveform, which reads about 1.2–1.4× high because one cycle's ringing shifts the next peak. The tests hold the reading to between 0.9× and 1.6× the injected value and to rising with it. Use them as relative measures, not clinical ones.
 
@@ -101,9 +123,13 @@ Stack: Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, Web Audio 
 src/types/dsp.ts            telemetry contract between the engine and the views
 src/lib/dsp/                windows, FFT + LPC + roots, pitch + jitter, vowel targets,
                             synthetic voice, frame analyser, audio controller,
-                            WAV codec, offline analysis
+                            WAV codec, offline analysis,
+                            classroom test signals, audio file ingest
+src/lib/storage/            the local takes vault (IndexedDB, never uploaded)
 src/app/api/                /api/vowels, /api/synth, /api/analyze
-src/app/, src/components/   pages and the instrument
+src/store/lab-store.ts      the shared runtime: one analyser, many views, no per-frame React state
+src/components/instrument/  the canvases (draw.ts), the 3D plate, readouts and controls
+src/app/, src/components/   pages, the lab, the homepage, the docs
 ```
 
 ## Credits

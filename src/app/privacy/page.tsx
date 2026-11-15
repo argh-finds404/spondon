@@ -54,8 +54,10 @@ export default function PrivacyPage() {
             </p>
             <p>
               Samples go from the browser&rsquo;s audio system into the analyser&rsquo;s memory. Each frame reads the
-              newest sixth of a second and the next frame overwrites it. The samples are never written to disk and
-              never put in a request. Choosing another source, or closing the tab, releases the microphone.
+              newest sixth of a second and the next frame overwrites it. The samples are never put in a request.
+              Choosing another source, or closing the tab, releases the microphone. If you press record, the clip is
+              held in memory until you switch the microphone off; it is written to the browser&rsquo;s storage only if
+              you save it on the compare page.
             </p>
             <p>
               The browser&rsquo;s echo cancellation, noise suppression and automatic gain are switched off, because
@@ -66,9 +68,15 @@ export default function PrivacyPage() {
 
           <Item title="What the site keeps">
             <p>
-              Nothing. There are no accounts, no cookies, no analytics and no advertising. Your settings live in the
-              page&rsquo;s memory and are gone when you close it. The typefaces and pictures are served from this
-              site, not from a third party.
+              Nothing on a server. There are no accounts, no cookies, no analytics and no advertising. The typefaces
+              and pictures are served from this site, not from a third party.
+            </p>
+            <p>
+              Two things can be kept in your own browser, and only there. Your choice of light or dark theme is
+              remembered in its local storage. And on the <Link href="/compare" className="link">compare</Link> page,
+              a take you choose to save, with its notes, is stored in the browser&rsquo;s own database on this device.
+              Nothing saved there is uploaded; you can delete each take on that page, or all of them by clearing this
+              site&rsquo;s data in the browser&rsquo;s settings.
             </p>
             <p>
               The host that serves these pages keeps ordinary access logs, as any web server does: the address a

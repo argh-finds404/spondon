@@ -27,12 +27,7 @@ function Band({
           <h3 className="text-[clamp(1.5rem,3.3vw,3.25rem)] leading-[1.05] font-[560] tracking-[-0.03em] [font-stretch:106%]">
             {sentence}
           </h3>
-          <p
-            className={`t-small mt-3 max-w-[78ch] text-field-muted transition-opacity duration-300 ${on ? "opacity-100" : "h-0 overflow-hidden opacity-0"}`}
-            aria-hidden={!on}
-          >
-            {children}
-          </p>
+          {on && <p className="t-small mt-3 max-w-[78ch] text-field-muted">{children}</p>}
         </div>
         <button
           type="button"

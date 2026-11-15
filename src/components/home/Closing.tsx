@@ -47,7 +47,7 @@ export function Closing() {
               name="vowel"
               value={vowelId}
               onChange={(e) => setVowelId(e.target.value)}
-              className="bn inline-block cursor-pointer appearance-none rounded-(--radius) bg-accent-ink px-[0.28em] pb-[0.04em] align-baseline text-field"
+              className="bn inline-block cursor-pointer appearance-none rounded-(--radius) bg-accent-ink px-[0.28em] pb-[0.04em] align-baseline text-[#f7f4ec]"
             >
               {VOWEL_TARGETS.map((v) => (
                 <option key={v.id} value={v.id}>

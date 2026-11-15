@@ -85,7 +85,8 @@ export type TraceKind =
   | "vowel"
   | "spectrogram"
   | "pitchTrack"
-  | "figure";
+  | "figure"
+  | "figureOnAccent";
 
 export interface TrailView {
   f1: Float32Array;
@@ -1226,6 +1227,16 @@ const drawFigure: DrawFn = (ctx, s, t) => {
   paintDotFigure(ctx, s.w, s.h, s.modes.m, s.modes.n, INK.ink, INK.line);
 };
 
+/** The same live figure as black sand on the orange plate of the homepage. */
+const drawFigureOnAccent: DrawFn = (ctx, s, t) => {
+  if (t.voiced && t.formants.f1 > 0 && t.formants.f2 > 0) {
+    chladniModes(t.formants.f1, t.formants.f2, targetModes);
+    s.modes.m += (targetModes.m - s.modes.m) * 0.09;
+    s.modes.n += (targetModes.n - s.modes.n) * 0.09;
+  }
+  paintDotFigure(ctx, s.w, s.h, s.modes.m, s.modes.n, "#0a0a0b", "rgba(10, 10, 11, 0.28)");
+};
+
 // ── Spectrogram: time runs left to right, frequency upward, loudness as heat ──
 
 const GRAM_MAX_HZ = 5000;
@@ -1421,4 +1432,5 @@ export const DRAW: Record<TraceKind, DrawFn> = {
   spectrogram: drawSpectrogram,
   pitchTrack: drawPitchTrack,
   figure: drawFigure,
+  figureOnAccent: drawFigureOnAccent,
 };

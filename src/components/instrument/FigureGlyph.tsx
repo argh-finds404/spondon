@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { chladniModes } from "@/lib/chladni";
 import { findVowel } from "@/lib/dsp/vowel-targets";
+import { THEME_EVENT } from "@/lib/theme";
 import { INK, paintDotFigure } from "./draw";
 
 /** The still figure of one reference vowel, or of any pair of mode numbers. Painted once per size. */
@@ -14,7 +15,7 @@ export function FigureGlyph({
 }: {
   vowelId?: string;
   modes?: { m: number; n: number };
-  /** "ink" for the dark ground, "field" for the ivory one. */
+  /** "ink" draws in the page's ink colour; "field" draws black, for the orange field. */
   tone?: "ink" | "field";
   className?: string;
 }) {
@@ -33,11 +34,16 @@ export function FigureGlyph({
       canvas.height = Math.max(1, Math.round(rect.height * dpr));
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, rect.width, rect.height);
-      paintDotFigure(ctx, rect.width, rect.height, m, n, tone === "ink" ? INK.ink : INK.bg, null);
+      // "field" sits on the orange field, where the dots are always black.
+      paintDotFigure(ctx, rect.width, rect.height, m, n, tone === "ink" ? INK.ink : "#0a0a0b", null);
     };
     const observer = new ResizeObserver(paint);
     observer.observe(canvas);
-    return () => observer.disconnect();
+    window.addEventListener(THEME_EVENT, paint);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener(THEME_EVENT, paint);
+    };
   }, [m, n, tone]);
 
   return (

@@ -49,15 +49,17 @@ const GROUPS: {
 export function MeasuredList() {
   return (
     <Reveal as="section" id="honest" className="on-accent bg-accent py-[calc(var(--section)/2)] text-accent-ink">
-      <div className="wrap grid12 gap-y-10">
-        <div className="col-span-12 lg:col-span-4">
-          <h2 className="t-head reveal">Measured, derived, or drawn.</h2>
-          <p className="t-lead reveal mt-5 max-w-[30ch]" style={{ "--i": 1 } as React.CSSProperties}>
+      <div className="wrap grid12 items-end gap-y-6">
+        <h2 className="t-head reveal col-span-12 lg:col-span-7">Measured, derived, or drawn.</h2>
+        <div className="col-span-12 lg:col-span-5">
+          <p className="t-lead reveal max-w-[40ch]" style={{ "--i": 1 } as React.CSSProperties}>
             Every number on this site says how it was obtained. The sand figure is the only one that is a picture, and
             it says so.
           </p>
         </div>
-        <div data-ui className="col-span-12 grid gap-x-(--gutter) gap-y-8 sm:grid-cols-3 lg:col-span-8">
+      </div>
+      <div className="wrap mt-10 lg:mt-14">
+        <div data-ui className="grid gap-x-(--gutter) gap-y-5 md:grid-cols-3">
           {GROUPS.map((group, k) => (
             <div key={group.word} className="reveal rounded-(--radius) bg-accent-ink p-5 text-[#f7f4ec]" style={{ "--i": k + 1 } as React.CSSProperties}>
               <h3 className="flex items-center gap-2.5 text-[20px] font-semibold">

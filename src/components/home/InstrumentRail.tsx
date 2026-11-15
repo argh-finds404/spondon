@@ -109,10 +109,10 @@ export function InstrumentRail() {
           </p>
         </div>
         <div className="flex gap-2.5">
-          <button type="button" className="btn btn-ink btn-sm min-w-12 px-0" aria-label="Earlier instruments" onClick={() => step(-1)}>
+          <button type="button" className="btn btn-sm min-w-12 bg-field-ink! px-0 text-field! hover:opacity-90" aria-label="Earlier instruments" onClick={() => step(-1)}>
             ←
           </button>
-          <button type="button" className="btn btn-ink btn-sm min-w-12 px-0" aria-label="More instruments" onClick={() => step(1)}>
+          <button type="button" className="btn btn-sm min-w-12 bg-field-ink! px-0 text-field! hover:opacity-90" aria-label="More instruments" onClick={() => step(1)}>
             →
           </button>
         </div>

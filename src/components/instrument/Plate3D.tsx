@@ -5,7 +5,7 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
-import { chladni, chladniModes, type Modes } from "@/lib/chladni";
+import { chladniModes, type Modes } from "@/lib/chladni";
 import { labRuntime } from "@/store/lab-store";
 
 /**
@@ -196,8 +196,6 @@ function Plate({
     const dt = 0.0167;
     const energy = t.voiced ? Math.min(1, Math.max(0.18, (t.stability.rmsDb + 55) / 42)) : 0.06;
     const { positions, rest, vx, vz, phase, count } = sim;
-    const eps = 0.014;
-    const inv2Eps = 1 / (2 * eps);
     const force = (0.95 + 1.35 * energy) * dt;
     const shake = (0.04 + 0.36 * energy) * dt;
     const damping = Math.exp(-9.5 * dt);
@@ -209,6 +207,8 @@ function Plate({
       current.current.n += (target.current.n - current.current.n) * slew;
       const m = current.current.m;
       const n = current.current.n;
+      const a = n * Math.PI;
+      const b = m * Math.PI;
       clock.current.time += dt;
       const time = clock.current.time;
 
@@ -216,10 +216,19 @@ function Plate({
         const idx = i * 3;
         let x = positions[idx];
         let z = positions[idx + 2];
-        const c = chladni(x, z, m, n);
+        // C = cos(ax)cos(bz) − cos(bx)cos(az) and its exact slope: eight trig calls, not twenty.
+        const cax = Math.cos(a * x);
+        const sax = Math.sin(a * x);
+        const cbx = Math.cos(b * x);
+        const sbx = Math.sin(b * x);
+        const caz = Math.cos(a * z);
+        const saz = Math.sin(a * z);
+        const cbz = Math.cos(b * z);
+        const sbz = Math.sin(b * z);
+        const c = cax * cbz - cbx * caz;
         const absC = c < 0 ? -c : c;
-        const cx = (chladni(x + eps, z, m, n) - chladni(x - eps, z, m, n)) * inv2Eps;
-        const cz = (chladni(x, z + eps, m, n) - chladni(x, z - eps, m, n)) * inv2Eps;
+        const cx = -a * sax * cbz + b * sbx * caz;
+        const cz = -b * cax * sbz + a * cbx * saz;
 
         seed = (seed * 1664525 + 1013904223) >>> 0;
         const rx = ((seed & 0xffff) / 32768 - 1) * shake * (0.2 + absC);
@@ -295,14 +304,14 @@ export interface Plate3DProps {
   grains?: number;
 }
 
-export default function Plate3D({ interactive = false, showNodalLines = false, grains = 16000 }: Plate3DProps) {
+export default function Plate3D({ interactive = false, showNodalLines = false, grains = 10000 }: Plate3DProps) {
   const view = useRef<View>({ ...VIEW_HOME });
   const drag = useRef<{ x: number; y: number } | null>(null);
 
   const canvas = (
     <Canvas
       frameloop="demand"
-      dpr={[2, 3]}
+      dpr={[1, 2]}
       resize={{ offsetSize: true, scroll: false }}
       camera={{ position: [0, 1.86, 2.05], fov: 36, near: 0.1, far: 20 }}
       gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
