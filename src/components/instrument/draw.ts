@@ -1076,25 +1076,61 @@ const drawVowel: DrawFn = (ctx, s, t) => {
     ctx.lineCap = "butt";
   }
 
+  const hasBase = Boolean(
+    s.baseline && s.baseline !== t && s.baseline.voiced && s.baseline.formants.f1 > 0 && s.baseline.formants.f2 > 0,
+  );
+  const bx = hasBase && s.baseline ? xOf(s.baseline.formants.f2) : 0;
+  const by = hasBase && s.baseline ? yOf(s.baseline.formants.f1) : 0;
+
+  if (hasBase) {
+    ctx.strokeStyle = INK.lpc;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(bx, by, 5, 0, Math.PI * 2);
+    ctx.stroke();
+    if (!s.bare) {
+      ctx.font = s.fontStrong;
+      ctx.fillStyle = INK.lpc;
+      ctx.textAlign = "right";
+      ctx.textBaseline = "bottom";
+      ctx.fillText("A", bx - 7, by - 4);
+    }
+  }
+
   if (t.voiced && t.formants.f1 > 0 && t.formants.f2 > 0) {
     const cx = xOf(t.formants.f2);
     const cy = yOf(t.formants.f1);
-    if (s.baseline && s.baseline !== t && s.baseline.voiced && s.baseline.formants.f1 > 0 && s.baseline.formants.f2 > 0) {
-      const bx = xOf(s.baseline.formants.f2);
-      const by = yOf(s.baseline.formants.f1);
-      ctx.setLineDash([2, 3]);
-      ctx.strokeStyle = INK.mutedSoft;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(bx, by);
-      ctx.lineTo(cx, cy);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.strokeStyle = INK.inkSoft;
-      ctx.lineWidth = 1.25;
-      ctx.beginPath();
-      ctx.arc(bx, by, 4.5, 0, Math.PI * 2);
-      ctx.stroke();
+    if (hasBase) {
+      const dx = cx - bx;
+      const dy = cy - by;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 7) {
+        const ux = dx / dist;
+        const uy = dy / dist;
+        const sx = bx + ux * 6;
+        const sy = by + uy * 6;
+        const ex = cx - ux * 6;
+        const ey = cy - uy * 6;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = INK.lpc;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Crisp arrowhead pointing from Reference A toward Active B
+        const headLen = 7;
+        const angle = Math.atan2(dy, dx);
+        ctx.fillStyle = INK.lpc;
+        ctx.beginPath();
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - headLen * Math.cos(angle - Math.PI / 6), ey - headLen * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(ex - headLen * Math.cos(angle + Math.PI / 6), ey - headLen * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+      }
     }
     const target = findVowel(s.targetId);
     ctx.setLineDash([2, 4]);
@@ -1109,6 +1145,13 @@ const drawVowel: DrawFn = (ctx, s, t) => {
     ctx.beginPath();
     ctx.arc(cx, cy, 5, 0, Math.PI * 2);
     ctx.fill();
+    if (hasBase && !s.bare) {
+      ctx.font = s.fontStrong;
+      ctx.fillStyle = locked ? INK.lock : INK.accent;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "bottom";
+      ctx.fillText("B", cx + 7, cy - 4);
+    }
   }
 };
 

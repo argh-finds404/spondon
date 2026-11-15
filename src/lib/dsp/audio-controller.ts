@@ -69,6 +69,8 @@ export class AudioController {
   private recordBuf: Float32Array<ArrayBuffer> = new Float32Array(0);
   private recordWritePos = 0;
   private recordNotified = 0;
+  private recordAutoPlay = true;
+  private onRecordComplete: ((pcm: Float32Array, sampleRate: number) => void) | null = null;
   private tap: AudioWorkletNode | null = null;
   private tapModule: Promise<void> | null = null;
   private autoGain = 2.5;
@@ -219,11 +221,13 @@ export class AudioController {
   }
 
   /**
-   * Record a short clip from the live microphone into memory, so it can be replayed and re-analysed.
+   * Record a clip from the live microphone into memory, so it can be replayed, re-analysed or saved locally.
    * Samples are taken on the audio thread, one block after another, so the clip has no seams.
-   * It is never written to disk or sent anywhere, and is wiped when the microphone is released.
    */
-  startRecordingClip(durationSec = 3): void {
+  startRecordingClip(
+    durationSec = 3,
+    options: { autoPlay?: boolean; onComplete?: (pcm: Float32Array, sampleRate: number) => void } = {},
+  ): void {
     const ctx = this.ctx;
     if (this.mode !== "mic" || !ctx || !this.inGain) return;
     this.stopRecordedPlayback();
@@ -231,10 +235,53 @@ export class AudioController {
     this.recordBuf = new Float32Array(Math.round(ctx.sampleRate * durationSec));
     this.recordWritePos = 0;
     this.recordNotified = 0;
+    this.recordAutoPlay = options.autoPlay ?? true;
+    this.onRecordComplete = options.onComplete ?? null;
     this.recordingProgress = 0;
     this.isRecordingClip = true;
     this.onRecordingStateChange?.();
     void this.openTap(ctx);
+  }
+
+  /** Stop an active microphone recording early and finalize whatever samples were captured so far. */
+  stopRecordingClip(): void {
+    if (!this.isRecordingClip) return;
+    this.finalizeRecordedClip();
+  }
+
+  private finalizeRecordedClip(): void {
+    this.closeTap();
+    const capturedLen = this.recordWritePos;
+    const sampleRate = this.ctx?.sampleRate ?? SILENT_RATE;
+    const trimmed = new Float32Array(capturedLen);
+    trimmed.set(this.recordBuf.subarray(0, capturedLen));
+
+    // Bring the clip's peak to 0.55 so playback is clear across laptop mics without clipping.
+    let peak = 0;
+    for (let i = 0; i < trimmed.length; i++) {
+      const v = trimmed[i] < 0 ? -trimmed[i] : trimmed[i];
+      if (v > peak) peak = v;
+    }
+    if (peak > 1e-4) {
+      const scale = Math.min(12, 0.55 / peak);
+      for (let i = 0; i < trimmed.length; i++) trimmed[i] *= scale;
+    }
+
+    this.recordBuf = trimmed;
+    this.isRecordingClip = false;
+    this.hasRecordedClip = trimmed.length > 0;
+    this.recordingProgress = 1;
+
+    const cb = this.onRecordComplete;
+    this.onRecordComplete = null;
+    if (this.recordAutoPlay && trimmed.length > 0) {
+      this.setPlayRecordedClip(true, true);
+    } else {
+      this.onRecordingStateChange?.();
+    }
+    if (cb && trimmed.length > 0) {
+      cb(new Float32Array(trimmed), sampleRate);
+    }
   }
 
   private async openTap(ctx: AudioContext): Promise<void> {
@@ -273,21 +320,7 @@ export class AudioController {
     this.recordWritePos += count;
     this.recordingProgress = this.recordWritePos / this.recordBuf.length;
     if (this.recordWritePos >= this.recordBuf.length) {
-      this.closeTap();
-      // Bring the clip's peak to 0.55 so playback is clear but never clips.
-      let peak = 0;
-      for (let i = 0; i < this.recordBuf.length; i++) {
-        const v = this.recordBuf[i] < 0 ? -this.recordBuf[i] : this.recordBuf[i];
-        if (v > peak) peak = v;
-      }
-      if (peak > 1e-4) {
-        const scale = Math.min(12, 0.55 / peak);
-        for (let i = 0; i < this.recordBuf.length; i++) this.recordBuf[i] *= scale;
-      }
-      this.isRecordingClip = false;
-      this.hasRecordedClip = true;
-      this.recordingProgress = 1;
-      this.setPlayRecordedClip(true, true);
+      this.finalizeRecordedClip();
     } else if (this.recordingProgress - this.recordNotified >= 0.02) {
       // About fifty progress updates a clip, not one per audio block.
       this.recordNotified = this.recordingProgress;

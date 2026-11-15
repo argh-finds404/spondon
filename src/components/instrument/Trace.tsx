@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { subscribeTheme } from "@/lib/theme";
 import { labRuntime, useLabStore } from "@/store/lab-store";
 import type { DSPFrameTelemetry } from "@/types/dsp";
 import { createDrawState, DRAW, pickFormantPole, pickVowel, pointerToPole, type TraceKind } from "./draw";
@@ -16,6 +17,12 @@ interface TraceProps {
   inspect?: boolean;
   /** Overlay the original frozen or experiment baseline telemetry when parameters are modified. */
   compareBaseline?: boolean;
+  /** Optional explicit telemetry frame to render instead of the live labRuntime stream (e.g. a saved take). */
+  frame?: DSPFrameTelemetry | null;
+  /** Optional explicit baseline telemetry frame to overlay when compareBaseline is true. */
+  baselineFrame?: DSPFrameTelemetry | null;
+  /** Optional vowel target override for static comparison views. */
+  targetVowel?: string;
   /** Z-plane only: allow dragging F1 and F2 poles directly inside the unit circle. */
   draggablePoles?: boolean;
   /** Z-plane only: which formant pole is selected for keyboard nudging (1 or 2). */
@@ -37,6 +44,9 @@ export function Trace({
   bare = false,
   inspect = false,
   compareBaseline = false,
+  frame = null,
+  baselineFrame = null,
+  targetVowel,
   draggablePoles = false,
   selectedPoleFormant = 1,
   onPoleSelect,
@@ -48,6 +58,9 @@ export function Trace({
   const stateRef = useRef(createDrawState());
   const kindRef = useRef(kind);
   const compareRef = useRef(compareBaseline);
+  const frameRef = useRef<DSPFrameTelemetry | null>(frame);
+  const baselineFrameRef = useRef<DSPFrameTelemetry | null>(baselineFrame);
+  const drawFnRef = useRef<((t: DSPFrameTelemetry) => void) | null>(null);
   const draggingPoleRef = useRef<1 | 2 | null>(null);
   const targetId = useLabStore((s) => s.targetId);
   const frozen = useLabStore((s) => s.frozen);
@@ -57,15 +70,32 @@ export function Trace({
   useEffect(() => {
     kindRef.current = kind;
     compareRef.current = compareBaseline;
+    frameRef.current = frame;
+    baselineFrameRef.current = baselineFrame;
     stateRef.current.bare = bare;
-    stateRef.current.targetId = targetId;
+    stateRef.current.targetId = targetVowel ?? targetId;
+    stateRef.current.trail = frame ? null : labRuntime.trail;
     stateRef.current.draggablePoles = draggablePoles;
     stateRef.current.selectedPoleFormant = selectedPoleFormant;
-    const expBase = labRuntime.getExperimentBaseline()?.telemetry ?? null;
+    const expBase = baselineFrame ?? labRuntime.getExperimentBaseline()?.telemetry ?? null;
     stateRef.current.baseline = compareBaseline
       ? expBase ?? (frozen && recomputeCount > 0 ? labRuntime.getBaselineTelemetry() : null)
       : null;
-  }, [kind, bare, targetId, compareBaseline, draggablePoles, selectedPoleFormant, frozen, recomputeCount, baselineVersion]);
+    drawFnRef.current?.(frame ?? labRuntime.getActiveTelemetry());
+  }, [
+    kind,
+    bare,
+    targetId,
+    targetVowel,
+    compareBaseline,
+    frame,
+    baselineFrame,
+    draggablePoles,
+    selectedPoleFormant,
+    frozen,
+    recomputeCount,
+    baselineVersion,
+  ]);
 
   useEffect(() => {
     const box = boxRef.current;
@@ -73,7 +103,7 @@ export function Trace({
     const ctx = canvas?.getContext("2d");
     if (!box || !canvas || !ctx) return;
     const s = stateRef.current;
-    s.trail = labRuntime.trail;
+    s.trail = frameRef.current ? null : labRuntime.trail;
     let dpr = 1;
     let shownHover = "";
 
@@ -85,8 +115,9 @@ export function Trace({
     void document.fonts?.load(s.fontGlyph, "আ");
 
     const draw = (t: DSPFrameTelemetry) => {
+      const targetFrame = frameRef.current ?? t;
       if (compareRef.current) {
-        const expBase = labRuntime.getExperimentBaseline()?.telemetry ?? null;
+        const expBase = baselineFrameRef.current ?? labRuntime.getExperimentBaseline()?.telemetry ?? null;
         const st = useLabStore.getState();
         s.baseline = expBase ?? (st.frozen && st.recomputeCount > 0 ? labRuntime.getBaselineTelemetry() : null);
       } else {
@@ -94,13 +125,14 @@ export function Trace({
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, s.w, s.h);
-      DRAW[kindRef.current](ctx, s, t);
+      DRAW[kindRef.current](ctx, s, targetFrame);
       const out = hoverRef.current;
       if (out && s.hover !== shownHover) {
         shownHover = s.hover;
         out.textContent = shownHover;
       }
     };
+    drawFnRef.current = draw;
 
     const resize = new ResizeObserver(() => {
       const rect = box.getBoundingClientRect();
@@ -111,7 +143,7 @@ export function Trace({
       dpr = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
       canvas.width = Math.round(s.w * dpr);
       canvas.height = Math.round(s.h * dpr);
-      draw(labRuntime.getActiveTelemetry());
+      draw(frameRef.current ?? labRuntime.getActiveTelemetry());
     });
     resize.observe(box);
 
@@ -124,8 +156,11 @@ export function Trace({
       }
     });
     visibility.observe(box);
+    const unsubTheme = subscribeTheme(() => draw(frameRef.current ?? labRuntime.getActiveTelemetry()));
 
     return () => {
+      drawFnRef.current = null;
+      unsubTheme();
       resize.disconnect();
       visibility.disconnect();
       unsubscribe?.();
@@ -149,11 +184,14 @@ export function Trace({
     if (draggablePoles && draggingPoleRef.current) {
       const { re, im } = pointerToPole(stateRef.current, x, y);
       labRuntime.setPoleOverride(draggingPoleRef.current, re, im);
+    } else if (frameRef.current) {
+      drawFnRef.current?.(frameRef.current);
     }
   };
   const untrack = () => {
     stateRef.current.px = -1;
     stateRef.current.py = -1;
+    if (frameRef.current) drawFnRef.current?.(frameRef.current);
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {

@@ -11,6 +11,7 @@ const COLUMNS = [
     links: [
       { href: "/lab", label: "Open the lab" },
       { href: "/vowels", label: "Vowel atlas" },
+      { href: "/compare", label: "Compare takes & files" },
       { href: "/lab?signal=square", label: "Test signals" },
     ],
   },
