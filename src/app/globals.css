@@ -2,36 +2,71 @@
 
 /*
  * SPONDON visual system.
- * Carbon ground, ivory ink, one orange. Cyan and emerald are data hues only:
+ * Three fields: black, warm white, and one loud orange. Cyan and emerald are data hues only:
  * cyan draws the LPC envelope, emerald marks a target lock. Nothing else may use them.
+ * Two themes share every token; "field" is always the opposite ground, so a field section
+ * is white on the dark theme and black on the light one.
  */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a0a0b;
+  --surface: #141416;
+  --raised: #1e1e22;
+  --hover: #28282e;
+  --line: #2c2c33;
+  --grid: #1c1c21;
+  --control: #4a4a55;
+  --ink: #f7f4ec;
+  --muted: #9c9ca8;
+  --accent: #ff4d00;
+  --accent-hot: #ff6a24;
+  --accent-deep: #b93500;
+  --accent-ink: #0a0a0b;
+  --lpc: #1fdcff;
+  --lock: #19c98c;
+  --field: #f7f4ec;
+  --field-ink: #0a0a0b;
+  --field-muted: #55555d;
+  --edge: #000000;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f7f4ec;
+  --surface: #ffffff;
+  --raised: #ece8dd;
+  --hover: #e0dbce;
+  --line: #d8d3c5;
+  --grid: #ebe7dc;
+  --control: #a09a8b;
+  --ink: #0a0a0b;
+  --muted: #5d5b55;
+  --accent: #ff4d00;
+  --accent-hot: #ff6a24;
+  --accent-deep: #b93500;
+  --accent-ink: #0a0a0b;
+  --lpc: #0086a8;
+  --lock: #0a8f61;
+  --field: #0a0a0b;
+  --field-ink: #f7f4ec;
+  --field-muted: #a3a3ad;
+  --edge: #c9c3b3;
+}
+
 :root {
-  --bg: #08090c;
-  --surface: #101217;
-  --raised: #181b22;
-  --line: #262a33;
-  --control: #3d4350;
-  --ink: #f3f0e6;
-  --muted: #8a909e;
-  --accent: #ff5500;
-  --accent-ink: #08090c;
-  --lpc: #00e5ff;
-  --lock: #10b981;
-  --field: #f3f0e6;
-  --field-ink: #08090c;
-  --field-muted: #4a4e58;
+  --margin: clamp(16px, 2.4vw, 40px);
+  --gutter: clamp(16px, 1.7vw, 28px);
+  --section: clamp(72px, 8.5vw, 144px);
+  --radius: 14px;
+  --radius-sm: 9px;
+  --nav-h: 68px;
 
-  --margin: clamp(16px, 2.2vw, 32px);
-  --gutter: clamp(16px, 1.7vw, 24px);
-  --section: clamp(96px, 12vw, 200px);
-  --radius: 2px;
-  --nav-h: 56px;
-
-  --step-small: clamp(0.8125rem, 0.79rem + 0.1vw, 0.875rem);
-  --step-body: clamp(1.0625rem, 1rem + 0.25vw, 1.1875rem);
-  --step-lead: clamp(1.25rem, 1.1rem + 0.7vw, 1.625rem);
-  --step-head: clamp(2rem, 1.3rem + 3.2vw, 4rem);
-  --step-display: clamp(3.25rem, 1rem + 9.6vw, 10.5rem);
+  --step-small: clamp(0.875rem, 0.85rem + 0.12vw, 0.9375rem);
+  --step-body: clamp(1.0625rem, 1rem + 0.3vw, 1.25rem);
+  --step-lead: clamp(1.3125rem, 1.12rem + 0.8vw, 1.75rem);
+  --step-head: clamp(2.25rem, 1.4rem + 3.6vw, 4.75rem);
+  --step-display: clamp(3.5rem, 1rem + 10vw, 11rem);
 
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -40,11 +75,14 @@
   --color-bg: var(--bg);
   --color-surface: var(--surface);
   --color-raised: var(--raised);
+  --color-hover: var(--hover);
   --color-line: var(--line);
   --color-control: var(--control);
   --color-ink: var(--ink);
   --color-muted: var(--muted);
   --color-accent: var(--accent);
+  --color-accent-hot: var(--accent-hot);
+  --color-accent-deep: var(--accent-deep);
   --color-accent-ink: var(--accent-ink);
   --color-lpc: var(--lpc);
   --color-lock: var(--lock);
@@ -65,6 +103,7 @@ html {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   scroll-padding-top: calc(var(--nav-h) + 24px);
+  scroll-behavior: smooth;
 }
 
 body {
@@ -72,6 +111,9 @@ body {
   font-size: var(--step-body);
   line-height: 1.5;
   overflow-x: clip;
+  transition:
+    background-color 320ms ease,
+    color 320ms ease;
 }
 
 ::selection {
@@ -82,281 +124,425 @@ body {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
+  border-radius: 4px;
 }
 
-.on-field :focus-visible,
-.on-accent :focus-visible {
+.on-field :focus-visible {
   outline-color: var(--field-ink);
 }
 
+.on-accent :focus-visible {
+  outline-color: var(--accent-ink);
+}
+
 @layer components {
-/* ── Frame ─────────────────────────────────────────────────────────── */
+  /* ── Frame ───────────────────────────────────────────────────────── */
 
-.wrap {
-  padding-inline: var(--margin);
-}
+  .wrap {
+    padding-inline: var(--margin);
+  }
 
-.grid12 {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  column-gap: var(--gutter);
-}
+  .grid12 {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    column-gap: var(--gutter);
+  }
 
-.section {
-  padding-block: calc(var(--section) / 2);
-}
+  .section {
+    padding-block: calc(var(--section) / 2);
+  }
 
-/* ── Type: five steps, one family across Latin and Bangla ──────────── */
+  /* ── Type: five steps, one family across Latin and Bangla ────────── */
 
-.t-display {
-  font-size: var(--step-display);
-  font-weight: 600;
-  font-stretch: 108%;
-  line-height: 0.92;
-  letter-spacing: -0.035em;
-}
+  .t-display {
+    font-size: var(--step-display);
+    font-weight: 620;
+    font-stretch: 108%;
+    line-height: 0.92;
+    letter-spacing: -0.035em;
+  }
 
-.t-head {
-  font-size: var(--step-head);
-  font-weight: 550;
-  font-stretch: 106%;
-  line-height: 1.02;
-  letter-spacing: -0.03em;
-  text-wrap: balance;
-}
+  .t-head {
+    font-size: var(--step-head);
+    font-weight: 580;
+    font-stretch: 106%;
+    line-height: 1;
+    letter-spacing: -0.032em;
+    text-wrap: balance;
+  }
 
-.t-lead {
-  font-size: var(--step-lead);
-  font-weight: 450;
-  line-height: 1.3;
-  letter-spacing: -0.012em;
-  text-wrap: pretty;
-}
+  .t-lead {
+    font-size: var(--step-lead);
+    font-weight: 450;
+    line-height: 1.28;
+    letter-spacing: -0.012em;
+    text-wrap: pretty;
+  }
 
-.t-body {
-  font-size: var(--step-body);
-  line-height: 1.5;
-  text-wrap: pretty;
-}
+  .t-body {
+    font-size: var(--step-body);
+    line-height: 1.5;
+    text-wrap: pretty;
+  }
 
-.t-small {
-  font-size: var(--step-small);
-  line-height: 1.45;
-}
+  .t-small {
+    font-size: var(--step-small);
+    line-height: 1.45;
+  }
 
-.bn {
-  font-family: var(--font-bangla), var(--font-latin), sans-serif;
-}
+  .bn {
+    font-family: var(--font-bangla), var(--font-latin), sans-serif;
+  }
 
-.num {
-  font-variant-numeric: tabular-nums;
-}
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
 
-.prose-measure {
-  max-width: 62ch;
-}
+  .prose-measure {
+    max-width: 62ch;
+  }
 
-/* ── Controls: one shape, square ──────────────────────────────────── */
+  /* ── Controls: rounded squares that press like keys ──────────────── */
 
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.6em;
-  min-height: 44px;
-  padding: 0 1.15em;
-  border-radius: var(--radius);
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-size: var(--step-small);
-  font-weight: 600;
-  letter-spacing: 0;
-  white-space: nowrap;
-  transition:
-    transform 160ms var(--ease-out),
-    background-color 160ms ease;
-}
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6em;
+    min-height: 52px;
+    padding: 0 1.5em;
+    border-radius: var(--radius);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 1rem;
+    font-weight: 640;
+    letter-spacing: -0.005em;
+    white-space: nowrap;
+    box-shadow: 0 5px 0 var(--accent-deep);
+    transform: translateY(-2px);
+    transition:
+      transform 140ms var(--ease-out),
+      box-shadow 140ms var(--ease-out),
+      background-color 160ms ease;
+  }
 
-.btn:hover {
-  background: #ff6a1f;
-}
+  .btn:hover {
+    background: var(--accent-hot);
+    transform: translateY(-3px);
+    box-shadow: 0 6px 0 var(--accent-deep);
+  }
 
-.btn:active {
-  transform: scale(0.97);
-}
+  .btn:active {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 var(--accent-deep);
+  }
 
-.btn-quiet {
-  background: var(--raised);
-  color: var(--ink);
-}
+  .btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
 
-.btn-quiet:hover {
-  background: #22262f;
-}
+  .btn-sm {
+    min-height: 40px;
+    padding: 0 1.1em;
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    box-shadow: 0 4px 0 var(--accent-deep);
+  }
 
-.btn-ink {
-  background: var(--field-ink);
-  color: var(--field);
-}
+  .btn-quiet {
+    background: var(--raised);
+    color: var(--ink);
+    box-shadow: 0 5px 0 var(--edge);
+  }
 
-.btn-ink:hover {
-  background: #1b1e25;
-}
+  .btn-quiet:hover {
+    background: var(--hover);
+    box-shadow: 0 6px 0 var(--edge);
+  }
 
-.link {
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 0.22em;
-  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
-  transition: text-decoration-color 160ms ease;
-}
+  .btn-quiet:active {
+    box-shadow: 0 1px 0 var(--edge);
+  }
 
-.link:hover {
-  text-decoration-color: currentColor;
-}
+  .btn-ink {
+    background: var(--accent-ink);
+    color: #f7f4ec;
+    box-shadow: 0 5px 0 var(--accent-deep);
+  }
 
-/* ── Instrument fragments. Inside [data-ui] the product's own conventions apply. ── */
+  .btn-ink:hover {
+    background: #1c1c20;
+    box-shadow: 0 6px 0 var(--accent-deep);
+  }
 
-[data-ui] {
-  font-size: 13px;
-  line-height: 1.4;
-}
+  .btn-ink:active {
+    box-shadow: 0 1px 0 var(--accent-deep);
+  }
 
-.ui-panel {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
+  .link {
+    text-decoration: underline;
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 0.24em;
+    text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+    transition: text-decoration-color 160ms ease;
+  }
 
-.ui-label {
-  font-size: 12px;
-  color: var(--muted);
-}
+  .link:hover {
+    text-decoration-color: var(--accent);
+  }
 
-.ui-fig {
-  font-family: var(--font-mono);
-  font-stretch: 87%;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
-}
+  /* A segmented choice: one raised tray, the chosen key filled. */
+  .seg {
+    display: inline-flex;
+    gap: 3px;
+    padding: 3px;
+    border-radius: var(--radius-sm);
+    background: var(--raised);
+  }
 
-/* The one selection mark of the instrument: an accent line as wide as its label. */
-.ui-tab {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  color: var(--muted);
-  transition: color 140ms ease;
-}
+  .seg > button {
+    min-height: 38px;
+    padding: 0 0.95em;
+    border-radius: 7px;
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 560;
+    white-space: nowrap;
+    transition:
+      background-color 160ms ease,
+      color 160ms ease,
+      transform 120ms var(--ease-out);
+  }
 
-.ui-tab:hover,
-.ui-tab[aria-pressed="true"],
-.ui-tab[aria-selected="true"],
-.ui-tab[aria-current="page"],
-.ui-tab[aria-checked="true"],
-.ui-tab[data-on="true"] {
-  color: var(--ink);
-}
+  .seg > button:hover {
+    color: var(--ink);
+  }
 
-.ui-tab::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 1px;
-  background: var(--accent);
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 200ms var(--ease-out);
-}
+  .seg > button:active {
+    transform: scale(0.97);
+  }
 
-.ui-tab[aria-pressed="true"]::after,
-.ui-tab[aria-selected="true"]::after,
-.ui-tab[aria-current="page"]::after,
-.ui-tab[aria-checked="true"]::after,
-.ui-tab[data-on="true"]::after {
-  transform: scaleX(1);
-}
+  .seg > button[aria-pressed="true"],
+  .seg > button[aria-checked="true"],
+  .seg > button[aria-selected="true"] {
+    background: var(--ink);
+    color: var(--bg);
+  }
 
-.ui-tab:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
+  .seg > button[data-hot="true"] {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
 
-input[type="range"].ui-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 20px;
-  background: transparent;
-  cursor: pointer;
-}
+  .seg > button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 
-input[type="range"].ui-slider::-webkit-slider-runnable-track {
-  height: 2px;
-  background: var(--control);
-}
+  /* ── Instrument fragments. Inside [data-ui] the product's own conventions apply. ── */
 
-input[type="range"].ui-slider::-moz-range-track {
-  height: 2px;
-  background: var(--control);
-}
+  [data-ui] {
+    font-size: 14px;
+    line-height: 1.4;
+  }
 
-input[type="range"].ui-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 8px;
-  height: 18px;
-  margin-top: -8px;
-  background: var(--ink);
-  border-radius: 1px;
-}
+  .ui-panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: clip;
+    transition:
+      background-color 320ms ease,
+      border-color 320ms ease;
+  }
 
-input[type="range"].ui-slider::-moz-range-thumb {
-  width: 8px;
-  height: 18px;
-  background: var(--ink);
-  border: 0;
-  border-radius: 1px;
-}
+  .ui-label {
+    font-size: 13px;
+    color: var(--muted);
+  }
 
-input[type="range"].ui-slider:hover::-webkit-slider-thumb,
-input[type="range"].ui-slider:focus-visible::-webkit-slider-thumb {
-  background: var(--accent);
-}
+  .ui-fig {
+    font-family: var(--font-mono);
+    font-stretch: 87%;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
 
-input[type="range"].ui-slider:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
+  /* The one selection mark of the instrument: an accent line as wide as its label. */
+  .ui-tab {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    color: var(--muted);
+    transition: color 140ms ease;
+  }
 
-/* Provenance marks: shape, not hue, says where a number comes from. */
-.mark {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  flex: none;
-  background: var(--ink);
-  border-radius: 50%;
-}
+  .ui-tab:hover,
+  .ui-tab[aria-pressed="true"],
+  .ui-tab[aria-selected="true"],
+  .ui-tab[aria-current="page"],
+  .ui-tab[aria-checked="true"],
+  .ui-tab[data-on="true"] {
+    color: var(--ink);
+  }
 
-.mark-derived {
-  border-radius: 0;
-  transform: rotate(45deg) scale(0.86);
-}
+  .ui-tab::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 220ms var(--ease-out);
+  }
 
-.mark-mapped {
-  background: transparent;
-  box-shadow: inset 0 0 0 2px var(--ink);
-}
+  .ui-tab[aria-pressed="true"]::after,
+  .ui-tab[aria-selected="true"]::after,
+  .ui-tab[aria-current="page"]::after,
+  .ui-tab[aria-checked="true"]::after,
+  .ui-tab[data-on="true"]::after {
+    transform: scaleX(1);
+  }
 
-.mark-reference {
-  background: var(--muted);
-  border-radius: 0;
-  height: 2px;
-}
+  .ui-tab:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  input[type="range"].ui-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 26px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  input[type="range"].ui-slider::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 4px;
+    background: var(--control);
+  }
+
+  input[type="range"].ui-slider::-moz-range-track {
+    height: 4px;
+    border-radius: 4px;
+    background: var(--control);
+  }
+
+  input[type="range"].ui-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 22px;
+    margin-top: -9px;
+    background: var(--ink);
+    border-radius: 5px;
+    transition: background-color 140ms ease;
+  }
+
+  input[type="range"].ui-slider::-moz-range-thumb {
+    width: 14px;
+    height: 22px;
+    background: var(--ink);
+    border: 0;
+    border-radius: 5px;
+  }
+
+  input[type="range"].ui-slider:hover::-webkit-slider-thumb,
+  input[type="range"].ui-slider:focus-visible::-webkit-slider-thumb {
+    background: var(--accent);
+  }
+
+  input[type="range"].ui-slider:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* Provenance marks: shape, not hue, says where a number comes from. */
+  .mark {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    flex: none;
+    background: currentColor;
+    border-radius: 50%;
+  }
+
+  .mark-derived {
+    border-radius: 0;
+    transform: rotate(45deg) scale(0.86);
+  }
+
+  .mark-mapped {
+    background: transparent;
+    box-shadow: inset 0 0 0 2px currentColor;
+  }
+
+  .mark-reference {
+    opacity: 0.6;
+    border-radius: 0;
+    height: 2px;
+  }
+
+  /* ── Depth ───────────────────────────────────────────────────────── */
+
+  /* A card that leans toward the pointer. --rx and --ry are set by useTilt(). */
+  .tilt {
+    transform: perspective(1200px) rotateX(calc(var(--ry, 0) * 1deg)) rotateY(calc(var(--rx, 0) * 1deg));
+    transform-style: preserve-3d;
+    transition: transform 500ms var(--ease-out);
+    will-change: transform;
+  }
+
+  .tilt[data-live="true"] {
+    transition-duration: 90ms;
+  }
+
+  /* The hero's three instruments, standing in space. */
+  .deck {
+    perspective: 1500px;
+    perspective-origin: 50% 42%;
+  }
+
+  @media (min-width: 64rem) {
+    .deck-wing-l {
+      transform: translate3d(9%, 0, -150px) rotateY(24deg);
+      transform-origin: right center;
+    }
+
+    .deck-wing-r {
+      transform: translate3d(-9%, 0, -150px) rotateY(-24deg);
+      transform-origin: left center;
+    }
+  }
+
+  /* A row you move sideways through. */
+  .rail {
+    display: flex;
+    gap: var(--gutter);
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: var(--margin);
+    padding-inline: var(--margin);
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  .rail > * {
+    flex: none;
+    scroll-snap-align: start;
+  }
 }
 
 /* ── Equations and code ───────────────────────────────────────────── */
@@ -373,7 +559,7 @@ math[display="block"] {
 
 .eq {
   overflow-x: auto;
-  padding: 18px 20px;
+  padding: 20px 22px;
   background: var(--surface);
   border-radius: var(--radius);
 }
@@ -385,7 +571,7 @@ code {
 }
 
 pre {
-  font-size: 13px;
+  font-size: 13.5px;
   line-height: 1.65;
   overflow-x: auto;
   tab-size: 2;
@@ -393,19 +579,19 @@ pre {
 
 :not(pre) > code {
   font-size: 0.86em;
-  padding: 0.1em 0.35em;
+  padding: 0.12em 0.4em;
   background: var(--raised);
-  border-radius: var(--radius);
+  border-radius: 6px;
 }
 
 /* ── Motion. Content is only hidden once the script has said it is running. ── */
 
 .js .reveal {
   opacity: 0;
-  transform: translateY(24px);
+  transform: translateY(26px);
   transition:
-    opacity 700ms var(--ease-out),
-    transform 700ms var(--ease-out);
+    opacity 760ms var(--ease-out),
+    transform 760ms var(--ease-out);
   transition-delay: calc(var(--i, 0) * 80ms);
 }
 
@@ -425,6 +611,19 @@ pre {
 
 .drift {
   animation: drift 18s ease-in-out infinite alternate;
+}
+
+@keyframes float {
+  from {
+    translate: 0 -6px;
+  }
+  to {
+    translate: 0 6px;
+  }
+}
+
+.float {
+  animation: float 6s ease-in-out infinite alternate;
 }
 
 /* The signal-chain drum: ten words on a cylinder that the scroll turns. */
@@ -489,6 +688,10 @@ dialog.sheet::backdrop {
 
   .js .reveal {
     opacity: 1;
+    transform: none;
+  }
+
+  .tilt {
     transform: none;
   }
 }

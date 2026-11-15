@@ -122,7 +122,7 @@ const STAGES: Stage[] = [
   },
 ];
 
-const STEP_SVH = 42;
+const STEP_SVH = 30;
 
 function subscribeMotion(onChange: () => void) {
   const query = window.matchMedia("(prefers-reduced-motion: reduce)");

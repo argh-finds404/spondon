@@ -1,12 +1,14 @@
 import type { DSPFrameTelemetry, VowelTarget } from "@/types/dsp";
 import { VoiceAnalyzer, type AnalyzerOptions } from "./analyzer";
+import { generateSignal, type WaveKind } from "./signals";
 import { synthesizeVoice, type FormantKeyframe, type Formants3 } from "./synth";
 import { findVowel } from "./vowel-targets";
 
 /**
  * silent: the synthetic voice is analysed straight from its buffer; no AudioContext, no sound.
  * synth:  the same buffer is played through Web Audio and read back from an AnalyserNode.
- * mic:    the microphone feeds that AnalyserNode instead. Nothing is recorded or sent anywhere.
+ * mic:    the microphone feeds that AnalyserNode instead. Nothing is sent anywhere; a 3 s clip is kept
+ *         in memory only if you ask for one, and is wiped when the microphone is released.
  * stream: a shared browser tab / YouTube / music stream feeds that AnalyserNode (video track stopped immediately).
  */
 export type SourceMode = "silent" | "synth" | "mic" | "stream";
@@ -20,6 +22,10 @@ export interface SynthSettings {
   jitterPercent: number;
   /** Glide around all the vowels instead of holding one. */
   tour: boolean;
+  /** "voice" is the vowel synthesiser; anything else swaps in a classroom test signal. */
+  wave: WaveKind;
+  /** Fundamental of the test signal, in Hz. */
+  waveHz: number;
 }
 
 export const DEFAULT_SYNTH: SynthSettings = {
@@ -28,6 +34,8 @@ export const DEFAULT_SYNTH: SynthSettings = {
   formantShift: 1,
   jitterPercent: 0.4,
   tour: true,
+  wave: "voice",
+  waveHz: 440,
 };
 
 /** Once round the vowel quadrilateral: low back, front, high front, centre, high back, and home. */
@@ -37,6 +45,10 @@ const GLIDE_SEC = 0.6;
 const SILENT_RATE = 48000;
 
 type Listener = (telemetry: DSPFrameTelemetry) => void;
+
+/** Runs on the audio thread and hands every block of samples to the page, in order and without gaps. */
+const TAP_SOURCE =
+  'registerProcessor("spondon-tap",class extends AudioWorkletProcessor{process(i){const c=i[0][0];if(c)this.port.postMessage(c.slice());return true}})';
 
 export class AudioController {
   mode: SourceMode = "silent";
@@ -56,8 +68,9 @@ export class AudioController {
   private loop: Float32Array<ArrayBuffer> = new Float32Array(0);
   private recordBuf: Float32Array<ArrayBuffer> = new Float32Array(0);
   private recordWritePos = 0;
-  private recordStartMs = 0;
-  private recordDurationMs = 3000;
+  private recordNotified = 0;
+  private tap: AudioWorkletNode | null = null;
+  private tapModule: Promise<void> | null = null;
   private autoGain = 2.5;
   private listeners = new Set<Listener>();
   private rafId = 0;
@@ -205,18 +218,81 @@ export class AudioController {
     }
   }
 
-  /** Start recording a 3-second voice clip from the active microphone into memory. */
+  /**
+   * Record a short clip from the live microphone into memory, so it can be replayed and re-analysed.
+   * Samples are taken on the audio thread, one block after another, so the clip has no seams.
+   * It is never written to disk or sent anywhere, and is wiped when the microphone is released.
+   */
   startRecordingClip(durationSec = 3): void {
-    if (this.mode !== "mic" || !this.ctx) return;
+    const ctx = this.ctx;
+    if (this.mode !== "mic" || !ctx || !this.inGain) return;
     this.stopRecordedPlayback();
-    const samples = Math.max(this.analyzer.rawSize, Math.round(this.analyzer.sampleRate * durationSec));
-    this.recordBuf = new Float32Array(samples);
+    this.closeTap();
+    this.recordBuf = new Float32Array(Math.round(ctx.sampleRate * durationSec));
     this.recordWritePos = 0;
-    this.recordStartMs = performance.now();
-    this.recordDurationMs = durationSec * 1000;
+    this.recordNotified = 0;
     this.recordingProgress = 0;
     this.isRecordingClip = true;
     this.onRecordingStateChange?.();
+    void this.openTap(ctx);
+  }
+
+  private async openTap(ctx: AudioContext): Promise<void> {
+    try {
+      this.tapModule ??= ctx.audioWorklet.addModule(
+        URL.createObjectURL(new Blob([TAP_SOURCE], { type: "text/javascript" })),
+      );
+      await this.tapModule;
+      // The source may have been switched while the module loaded.
+      if (ctx !== this.ctx || !this.inGain || !this.isRecordingClip) return;
+      const tap = new AudioWorkletNode(ctx, "spondon-tap", { numberOfInputs: 1, numberOfOutputs: 0 });
+      tap.port.onmessage = (event: MessageEvent<Float32Array>) => this.appendRecorded(event.data);
+      this.inGain.connect(tap);
+      this.tap = tap;
+    } catch {
+      this.isRecordingClip = false;
+      this.onRecordingStateChange?.();
+    }
+  }
+
+  private closeTap(): void {
+    if (!this.tap) return;
+    this.tap.port.onmessage = null;
+    try {
+      this.inGain?.disconnect(this.tap);
+    } catch {
+      /* already disconnected */
+    }
+    this.tap = null;
+  }
+
+  private appendRecorded(chunk: Float32Array): void {
+    if (!this.isRecordingClip) return;
+    const count = Math.min(chunk.length, this.recordBuf.length - this.recordWritePos);
+    for (let k = 0; k < count; k++) this.recordBuf[this.recordWritePos + k] = chunk[k];
+    this.recordWritePos += count;
+    this.recordingProgress = this.recordWritePos / this.recordBuf.length;
+    if (this.recordWritePos >= this.recordBuf.length) {
+      this.closeTap();
+      // Bring the clip's peak to 0.55 so playback is clear but never clips.
+      let peak = 0;
+      for (let i = 0; i < this.recordBuf.length; i++) {
+        const v = this.recordBuf[i] < 0 ? -this.recordBuf[i] : this.recordBuf[i];
+        if (v > peak) peak = v;
+      }
+      if (peak > 1e-4) {
+        const scale = Math.min(12, 0.55 / peak);
+        for (let i = 0; i < this.recordBuf.length; i++) this.recordBuf[i] *= scale;
+      }
+      this.isRecordingClip = false;
+      this.hasRecordedClip = true;
+      this.recordingProgress = 1;
+      this.setPlayRecordedClip(true, true);
+    } else if (this.recordingProgress - this.recordNotified >= 0.02) {
+      // About fifty progress updates a clip, not one per audio block.
+      this.recordNotified = this.recordingProgress;
+      this.onRecordingStateChange?.();
+    }
   }
 
   /** Play back the recorded 3-second voice clip in a continuous loop (and through speakers so the user hears it). */
@@ -259,11 +335,16 @@ export class AudioController {
     this.deviceLabel = null;
     this.isRecordingClip = false;
     this.playingRecordedClip = false;
+    this.hasRecordedClip = false;
+    this.recordBuf = new Float32Array(0);
     this.recordingProgress = 0;
     this.useRate(SILENT_RATE);
+    this.onRecordingStateChange?.();
   }
 
   private release(): void {
+    this.closeTap();
+    this.tapModule = null;
     this.voice?.src.stop();
     this.voice = null;
     this.streamSource?.disconnect();
@@ -288,6 +369,10 @@ export class AudioController {
 
   private renderLoop(): void {
     const s = this.settings;
+    if (s.wave !== "voice") {
+      this.loop = generateSignal({ wave: s.wave, hz: s.waveHz, sampleRate: this.analyzer.sampleRate, seed: 7 });
+      return;
+    }
     const shifted = (id: string): Formants3 => {
       const v = findVowel(id);
       return [v.targetF1 * s.formantShift, v.targetF2 * s.formantShift, v.targetF3 * s.formantShift];
@@ -362,44 +447,6 @@ export class AudioController {
         this.autoGain += (targetGain - this.autoGain) * 0.25;
         if (this.autoGain > 1.02) {
           for (let k = 0; k < raw.length; k++) raw[k] *= this.autoGain;
-        }
-      }
-
-      // If recording a 3s clip, append newest samples into recordBuf
-      if (this.isRecordingClip && this.recordBuf.length > 0) {
-        const elapsedMs = Math.max(0, performance.now() - this.recordStartMs);
-        const targetPos = Math.min(
-          this.recordBuf.length,
-          Math.floor((elapsedMs / 1000) * this.analyzer.sampleRate),
-        );
-        const delta = targetPos - this.recordWritePos;
-        if (delta > 0) {
-          const copyCount = Math.min(delta, raw.length);
-          const startInRaw = raw.length - copyCount;
-          const writeStart = targetPos - copyCount;
-          for (let k = 0; k < copyCount; k++) {
-            this.recordBuf[writeStart + k] = raw[startInRaw + k];
-          }
-          this.recordWritePos = targetPos;
-        }
-        this.recordingProgress = Math.min(1, elapsedMs / this.recordDurationMs);
-        if (elapsedMs >= this.recordDurationMs || this.recordWritePos >= this.recordBuf.length) {
-          // Normalize recorded clip peak to 0.55 so playback is clean and audible
-          let maxPeak = 0;
-          for (let i = 0; i < this.recordBuf.length; i++) {
-            const a = Math.abs(this.recordBuf[i]);
-            if (a > maxPeak) maxPeak = a;
-          }
-          if (maxPeak > 1e-4) {
-            const scale = Math.min(12, 0.55 / maxPeak);
-            for (let i = 0; i < this.recordBuf.length; i++) this.recordBuf[i] *= scale;
-          }
-          this.isRecordingClip = false;
-          this.hasRecordedClip = true;
-          this.recordingProgress = 1;
-          this.setPlayRecordedClip(true, true);
-        } else {
-          this.onRecordingStateChange?.();
         }
       }
     } else {

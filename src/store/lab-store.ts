@@ -9,7 +9,7 @@ import { getWindow } from "@/lib/dsp/windows";
 import type { ComplexPoint, DSPFrameTelemetry, WindowType } from "@/types/dsp";
 
 /** "all" shows every panel; the others solo one. */
-export type LabView = "all" | "figure" | "vowel" | "spectrum" | "poles" | "scope";
+export type LabView = "all" | "figure" | "vowel" | "spectrum" | "poles" | "scope" | "time";
 export type LabMode = "workspace" | "experiments";
 export type ExperimentId = 1 | 2 | 3 | 4 | 5;
 export type TraceStageId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;

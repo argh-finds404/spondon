@@ -15,10 +15,10 @@ export function Mark({
 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden focusable="false" className={className}>
-      <rect x="1" y="1" width="30" height="30" rx="1.5" fill="currentColor" />
+      <rect x="1" y="1" width="30" height="30" rx="7" fill="currentColor" />
       <path d="M16 0C3.5 7.5 3.5 12.5 16 16s12.5 8.5 0 16" fill="none" stroke={cut} strokeWidth="3.4" />
       <circle cx="16" cy="16" r="5.6" fill={cut} />
-      <circle cx="16" cy="16" r="3.2" fill="#ff5500" />
+      <circle cx="16" cy="16" r="3.2" fill="var(--accent)" />
     </svg>
   );
 }

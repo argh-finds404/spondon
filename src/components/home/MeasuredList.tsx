@@ -1,19 +1,19 @@
-import Image from "next/image";
 import { Prov, type Provenance } from "@/components/instrument/controls";
 import { Readout, type ReadoutField } from "@/components/instrument/Readout";
 import { Reveal } from "@/components/site/Reveal";
-import { worldAsset } from "@/lib/world-assets";
 
 const GROUPS: {
   word: string;
   kind: Provenance;
+  note: string;
   rows: { name: string; field: ReadoutField; unit?: string; bangla?: boolean }[];
 }[] = [
   {
     word: "Measured",
     kind: "measured",
+    note: "Read straight off the wave.",
     rows: [
-      { name: "Fundamental frequency, F0", field: "f0", unit: "Hz" },
+      { name: "Pitch, F0", field: "f0", unit: "Hz" },
       { name: "Jitter, cycle to cycle", field: "jitter", unit: "%" },
       { name: "Shimmer", field: "shimmer", unit: "dB" },
       { name: "Level", field: "level", unit: "dB FS" },
@@ -23,46 +23,54 @@ const GROUPS: {
   {
     word: "Derived",
     kind: "derived",
+    note: "From a model fitted to the wave.",
     rows: [
       { name: "First formant, F1", field: "f1", unit: "Hz" },
       { name: "Second formant, F2", field: "f2", unit: "Hz" },
       { name: "Third formant, F3", field: "f3", unit: "Hz" },
-      { name: "Bandwidth of F1", field: "b1", unit: "Hz" },
       { name: "Pole radius of F1", field: "poleRadius" },
-      { name: "Nearest reference vowel", field: "vowel", bangla: true },
-      { name: "Distance to the target", field: "bark", unit: "Bark" },
+      { name: "Nearest vowel", field: "vowel", bangla: true },
     ],
   },
   {
-    word: "Mapped",
+    word: "Drawn",
     kind: "mapped",
+    note: "A rule that turns numbers into a picture.",
     rows: [
-      { name: "Plate mode m, chosen by F1", field: "modeM" },
-      { name: "Plate mode n, chosen by F2", field: "modeN" },
+      { name: "Plate mode m, from F1", field: "modeM" },
+      { name: "Plate mode n, from F2", field: "modeN" },
+      { name: "Distance to the target", field: "bark", unit: "Bark" },
+      { name: "Match", field: "score", unit: "of 100" },
     ],
   },
 ];
 
-/** Two-ended rows: what the instrument reports, grouped by how far each number is from the signal. */
+/** Three columns across one loud field: what the instrument reports, by how far each number is from the signal. */
 export function MeasuredList() {
-  const plates = worldAsset("chladni-plate-10");
   return (
-    <Reveal as="section" id="honest" className="section wrap grid12 gap-y-12">
-      <div className="col-span-12 lg:col-span-5 lg:col-start-2">
-        <h2 className="t-head reveal">Measured, derived, or drawn.</h2>
-        <div data-ui className="reveal mt-10 max-w-[540px]" style={{ "--i": 1 } as React.CSSProperties}>
-          {GROUPS.map((group) => (
-            <div key={group.word} className="mb-10 last:mb-0">
-              <h3 className="mb-1 text-[15px] text-muted">{group.word}</h3>
-              <ul>
+    <Reveal as="section" id="honest" className="on-accent bg-accent py-[calc(var(--section)/2)] text-accent-ink">
+      <div className="wrap grid12 gap-y-10">
+        <div className="col-span-12 lg:col-span-4">
+          <h2 className="t-head reveal">Measured, derived, or drawn.</h2>
+          <p className="t-lead reveal mt-5 max-w-[30ch]" style={{ "--i": 1 } as React.CSSProperties}>
+            Every number on this site says how it was obtained. The sand figure is the only one that is a picture, and
+            it says so.
+          </p>
+        </div>
+        <div data-ui className="col-span-12 grid gap-x-(--gutter) gap-y-8 sm:grid-cols-3 lg:col-span-8">
+          {GROUPS.map((group, k) => (
+            <div key={group.word} className="reveal rounded-(--radius) bg-accent-ink p-5 text-[#f7f4ec]" style={{ "--i": k + 1 } as React.CSSProperties}>
+              <h3 className="flex items-center gap-2.5 text-[20px] font-semibold">
+                <Prov kind={group.kind}>{group.word}</Prov>
+              </h3>
+              <p className="mt-1 text-[14px] opacity-70">{group.note}</p>
+              <ul className="mt-4">
                 {group.rows.map((row) => (
-                  <li key={row.field} className="flex min-h-11 items-center justify-between gap-6 sm:min-h-9">
-                    <span className="flex items-center gap-2.5 text-[16px] text-ink">
-                      <Prov kind={group.kind}>{row.name}</Prov>
-                    </span>
-                    <span className={`text-[13px] whitespace-nowrap text-ink ${row.bangla ? "bn text-[16px]" : "ui-fig"}`}>
+                  <li key={row.field} className="flex min-h-10 items-center justify-between gap-4">
+                    <span className="text-[15px]">{row.name}</span>
+                    <span className={`text-[14px] whitespace-nowrap ${row.bangla ? "bn text-[18px] leading-none" : "ui-fig"}`}>
                       <Readout field={row.field} />
-                      {row.unit ? <span className="text-muted"> {row.unit}</span> : null}
+                      {row.unit ? <span className="opacity-60"> {row.unit}</span> : null}
                     </span>
                   </li>
                 ))}
@@ -71,29 +79,6 @@ export function MeasuredList() {
           ))}
         </div>
       </div>
-
-      <figure className="reveal col-span-12 lg:sticky lg:top-[calc(var(--nav-h)+24px)] lg:col-span-5 lg:col-start-8 lg:self-start" style={{ "--i": 2 } as React.CSSProperties}>
-        <div className="overflow-hidden rounded-(--radius) bg-surface">
-          <Image
-            src={plates.src}
-            alt="Four brass plates of different shapes on wooden stands, each with sand gathered into a pattern of lines"
-            width={plates.width}
-            height={plates.height}
-            sizes="(min-width: 1024px) 40vw, 100vw"
-            className="drift h-auto w-full"
-          />
-        </div>
-        <figcaption className="mt-5">
-          <p className="t-body max-w-[46ch] text-ink">
-            Every number here is labelled by how it was obtained. Pitch is read off the wave. Formants come from a
-            model fitted to it. The sand figure is neither: it is a rule that turns two formants into a picture, in
-            the manner of these plates.
-          </p>
-          <p className="t-small mt-3 text-muted">
-            Chladni plates, photographed in 2016. {plates.creator}, {plates.license}.
-          </p>
-        </figcaption>
-      </figure>
     </Reveal>
   );
 }

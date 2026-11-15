@@ -3,94 +3,95 @@ import { Prov } from "@/components/instrument/controls";
 import { PlateStage } from "@/components/instrument/PlateStage";
 import { Readout } from "@/components/instrument/Readout";
 import { Trace } from "@/components/instrument/Trace";
+import { Tilt } from "@/components/site/Tilt";
 
 /**
- * Sentence split by a frame. The frame is the instrument itself, running on the built-in
- * synthetic voice, and it belongs to a strip of instruments passing through the sentence:
- * the spectrum leaves at the top edge, the vowel chart arrives at the bottom.
+ * The first screen is the instrument, running. Three of its panels stand in space on an orange
+ * stage: the spectrum on the left wing, the sand plate in the middle, the vowel chart on the right.
+ * All three are live, driven by the built-in synthetic voice, and lean toward the pointer.
  */
 export function Hero() {
   return (
-    <section className="wrap relative overflow-hidden pt-(--nav-h) lg:h-svh lg:min-h-[680px]">
-      <div className="grid h-full grid-cols-1 items-center gap-x-6 pt-5 lg:grid-cols-[1fr_min(33vw,60svh)_1fr] lg:pt-0">
-        <h1 className="contents text-[9vw] leading-none font-[560] tracking-[-0.03em] [font-stretch:106%] lg:text-[clamp(2.125rem,3.4vw,3.75rem)]">
-          <span className="whitespace-nowrap lg:col-start-1 lg:row-start-1">Speak a vowel.</span>{" "}
-          <span className="order-3 justify-self-end whitespace-nowrap lg:order-none lg:col-start-3 lg:row-start-1">
+    <section className="wrap overflow-hidden pt-(--nav-h)">
+      <div className="grid12 items-center gap-y-10 py-10 lg:min-h-[calc(100svh-var(--nav-h))] lg:py-8">
+        <div className="col-span-12 lg:col-span-5">
+          <h1 className="text-[clamp(2.75rem,5.4vw,5.9rem)] leading-[0.95] font-[620] tracking-[-0.038em] [font-stretch:108%]">
+            Speak a vowel.
+            <br />
             See its figure.
-          </span>
-        </h1>
-
-        <div className="order-2 flex flex-col justify-center gap-3 py-3 lg:order-none lg:col-start-2 lg:row-start-1 lg:h-full lg:gap-6 lg:py-0">
-          <div aria-hidden className="flex h-7 flex-none items-end overflow-hidden lg:h-[30svh]">
-            <div data-ui className="ui-panel h-[220px] w-full flex-none">
-              <Trace kind="spectrum" bare label="" className="h-full w-full" />
-            </div>
-          </div>
-
-          <div data-ui className="ui-panel flex-none">
-            <PlateStage className="aspect-square w-full" />
-            <dl className="grid grid-cols-4 border-t border-line">
-              <div className="px-2 py-2.5 sm:px-3">
-                <dt className="ui-label">
-                  <Prov kind="measured">F0</Prov>
-                </dt>
-                <dd className="ui-fig mt-0.5 text-[12px] whitespace-nowrap text-ink sm:text-[13px]">
-                  <Readout field="f0" /> Hz
-                </dd>
-              </div>
-              <div className="px-2 py-2.5 sm:px-3">
-                <dt className="ui-label">
-                  <Prov kind="derived">F1</Prov>
-                </dt>
-                <dd className="ui-fig mt-0.5 text-[12px] whitespace-nowrap text-ink sm:text-[13px]">
-                  <Readout field="f1" /> Hz
-                </dd>
-              </div>
-              <div className="px-2 py-2.5 sm:px-3">
-                <dt className="ui-label">
-                  <Prov kind="derived">F2</Prov>
-                </dt>
-                <dd className="ui-fig mt-0.5 text-[12px] whitespace-nowrap text-ink sm:text-[13px]">
-                  <Readout field="f2" /> Hz
-                </dd>
-              </div>
-              <div className="px-2 py-2.5 sm:px-3">
-                <dt className="ui-label">
-                  <Prov kind="mapped">Vowel</Prov>
-                </dt>
-                <dd lang="bn" className="bn mt-0.5 text-[15px] leading-[18px] text-ink">
-                  <Readout field="vowel" />
-                </dd>
-              </div>
-            </dl>
-          </div>
-
-          <div aria-hidden className="flex h-7 flex-none items-start overflow-hidden lg:h-[30svh]">
-            <div data-ui className="ui-panel h-[220px] w-full flex-none">
-              <Trace kind="vowel" bare label="" className="h-full w-full" />
-            </div>
-          </div>
-        </div>
-
-        {/* Directly under each half of the sentence: what it is and what to do, then what you are looking at. */}
-        <div className="order-4 pt-4 pb-10 lg:relative lg:top-1/2 lg:order-none lg:col-start-1 lg:row-start-1 lg:mt-[calc(clamp(2.125rem,3.4vw,3.75rem)/2+2.25rem)] lg:max-w-[25rem] lg:self-start lg:p-0">
-          <p className="t-body text-ink">
+          </h1>
+          <p className="t-lead mt-7 max-w-[30ch] text-ink">
             An acoustic laboratory in a browser tab. It measures the pitch, formants and poles of a voice, live, and
-            draws each vowel as a Chladni sand figure.
+            draws each vowel as a figure in sand.
           </p>
-          <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
+          <div className="mt-9 flex flex-wrap items-center gap-x-7 gap-y-4">
             <Link href="/lab" className="btn">
               Open the lab
             </Link>
-            <Link href="/method" className="link t-small font-medium">
-              How it works
+            <Link href="/guide" className="link text-[17px] font-medium">
+              Take the two-minute tour
             </Link>
           </div>
+          <p className="t-small mt-9 max-w-[44ch] text-muted">
+            What you see is a built-in synthetic voice touring eight vowels. No microphone and no sound until you ask.
+          </p>
         </div>
 
-        <p className="t-small hidden text-muted lg:relative lg:top-1/2 lg:col-start-3 lg:row-start-1 lg:mt-[calc(clamp(2.125rem,3.4vw,3.75rem)/2+2.25rem)] lg:block lg:max-w-[21rem] lg:self-start lg:justify-self-end lg:text-right">
-          What you see is a built-in synthetic voice touring eight vowels. No microphone, no sound, until you ask.
-        </p>
+        <div className="deck col-span-12 lg:col-span-7">
+          <Tilt max={5} className="relative grid grid-cols-2 items-center gap-3 lg:grid-cols-[1fr_1.55fr_1fr] lg:gap-0">
+            {/* The stage: one flat slab of orange, behind everything. */}
+            <div
+              aria-hidden
+              className="absolute inset-x-[10%] top-[10%] -bottom-[4%] hidden rounded-(--radius) bg-accent lg:block"
+              style={{ transform: "translateZ(-240px)" }}
+            />
+
+            <div data-ui className="ui-panel deck-wing-l order-2 lg:order-none">
+              <p className="flex min-h-10 items-center border-b border-line px-3 text-[13px] font-medium text-ink">
+                <Prov kind="derived">Spectrum</Prov>
+              </p>
+              <Trace kind="spectrum" bare label="Spectrum of the current frame with its envelope and formants" className="h-36 w-full lg:h-[26svh]" />
+            </div>
+
+            <div data-ui className="ui-panel order-1 col-span-2 lg:order-none lg:col-span-1" style={{ transform: "translateZ(40px)" }}>
+              <PlateStage className="aspect-square w-full" />
+              <dl className="grid grid-cols-4 border-t border-line">
+                {(
+                  [
+                    ["measured", "F0", "f0", " Hz"],
+                    ["derived", "F1", "f1", " Hz"],
+                    ["derived", "F2", "f2", " Hz"],
+                  ] as const
+                ).map(([kind, name, field, unit]) => (
+                  <div key={name} className="px-2.5 py-3 sm:px-3.5">
+                    <dt className="ui-label">
+                      <Prov kind={kind}>{name}</Prov>
+                    </dt>
+                    <dd className="ui-fig mt-1 text-[13px] whitespace-nowrap text-ink sm:text-[15px]">
+                      <Readout field={field} />
+                      {unit}
+                    </dd>
+                  </div>
+                ))}
+                <div className="px-2.5 py-3 sm:px-3.5">
+                  <dt className="ui-label">
+                    <Prov kind="mapped">Vowel</Prov>
+                  </dt>
+                  <dd lang="bn" className="bn mt-1 text-[18px] leading-[20px] text-ink">
+                    <Readout field="vowel" />
+                  </dd>
+                </div>
+              </dl>
+            </div>
+
+            <div data-ui className="ui-panel deck-wing-r order-3 lg:order-none">
+              <p className="flex min-h-10 items-center border-b border-line px-3 text-[13px] font-medium text-ink">
+                <Prov kind="derived">Vowel chart</Prov>
+              </p>
+              <Trace kind="vowel" bare label="Vowel chart with the live position of the voice" className="h-36 w-full lg:h-[26svh]" />
+            </div>
+          </Tilt>
+        </div>
       </div>
     </section>
   );

@@ -7,6 +7,7 @@ import { PlateStage } from "@/components/instrument/PlateStage";
 import { Readout, type ReadoutField } from "@/components/instrument/Readout";
 import { Trace } from "@/components/instrument/Trace";
 import type { TraceKind } from "@/components/instrument/draw";
+import { SIGNAL_HZ_RANGE, SIGNAL_INFO, type SignalKind, type WaveKind } from "@/lib/dsp/signals";
 import { findVowel, nearestVowel, VOWEL_TARGETS, vowelGlyph } from "@/lib/dsp/vowel-targets";
 import { WINDOW_INFO, WINDOW_TYPES } from "@/lib/dsp/windows";
 import { labRuntime, useLabStore, type LabView, type TraceStageId } from "@/store/lab-store";
@@ -19,6 +20,7 @@ const VIEWS: { view: LabView; label: string }[] = [
   { view: "spectrum", label: "Spectrum" },
   { view: "poles", label: "Poles" },
   { view: "scope", label: "Scope" },
+  { view: "time", label: "Over time" },
 ];
 
 const READINGS: {
@@ -188,8 +190,42 @@ function VoiceControls() {
   const liveInput = sourceMode === "mic" || sourceMode === "stream";
   const updateSynth = useLabStore((s) => s.updateSynth);
   const setVolume = useLabStore((s) => s.setVolume);
+  const signal = synth.wave !== "voice";
   return (
     <div className="px-3 py-2">
+      <label className="block py-1.5">
+        <span className="ui-label">Built-in source</span>
+        <select
+          value={synth.wave}
+          disabled={liveInput}
+          onChange={(e) => updateSynth({ wave: e.target.value as WaveKind })}
+          className="mt-1.5 h-10 w-full rounded-(--radius-sm) border border-control bg-raised px-2.5 text-[14px] text-ink disabled:opacity-50"
+        >
+          <option value="voice">Synthetic voice (vowels)</option>
+          {(Object.keys(SIGNAL_INFO) as SignalKind[]).map((kind) => (
+            <option key={kind} value={kind}>
+              Test signal: {SIGNAL_INFO[kind].label.toLowerCase()}
+            </option>
+          ))}
+        </select>
+      </label>
+      {signal && (
+        <>
+          <Slider
+            label="Signal frequency"
+            value={synth.waveHz}
+            min={SIGNAL_HZ_RANGE[0]}
+            max={SIGNAL_HZ_RANGE[1]}
+            step={10}
+            disabled={liveInput || synth.wave === "sweep" || synth.wave === "noise"}
+            format={(v) => `${v.toFixed(0)} Hz`}
+            onCommit={(v) => updateSynth({ waveHz: v })}
+          />
+          <p className="ui-label mb-2">
+            What to expect in the spectrum: {SIGNAL_INFO[synth.wave as SignalKind].spectrum}
+          </p>
+        </>
+      )}
       {sourceMode === "mic" && (
         <Slider
           label="Microphone input boost"
@@ -201,13 +237,13 @@ function VoiceControls() {
           onCommit={setMicGain}
         />
       )}
-      <Slider label="Pitch" value={synth.f0Hz} min={70} max={350} step={1} disabled={liveInput} format={(v) => `${v.toFixed(0)} Hz`} onCommit={(v) => updateSynth({ f0Hz: v })} />
-      <Slider label="Formant shift (tract length)" value={synth.formantShift} min={0.8} max={1.25} step={0.01} disabled={liveInput} format={(v) => `× ${v.toFixed(2)}`} onCommit={(v) => updateSynth({ formantShift: v })} />
-      <Slider label="Jitter put in" value={synth.jitterPercent} min={0} max={3} step={0.1} disabled={liveInput} format={(v) => `${v.toFixed(1)} %`} onCommit={(v) => updateSynth({ jitterPercent: v })} />
+      <Slider label="Voice pitch" value={synth.f0Hz} min={70} max={350} step={1} disabled={liveInput || signal} format={(v) => `${v.toFixed(0)} Hz`} onCommit={(v) => updateSynth({ f0Hz: v })} />
+      <Slider label="Formant shift (tract length)" value={synth.formantShift} min={0.8} max={1.25} step={0.01} disabled={liveInput || signal} format={(v) => `× ${v.toFixed(2)}`} onCommit={(v) => updateSynth({ formantShift: v })} />
+      <Slider label="Jitter put in" value={synth.jitterPercent} min={0} max={3} step={0.1} disabled={liveInput || signal} format={(v) => `${v.toFixed(1)} %`} onCommit={(v) => updateSynth({ jitterPercent: v })} />
       <Slider label="Volume when played" value={volume} min={0} max={1} step={0.01} format={(v) => `${Math.round(v * 100)} %`} onCommit={setVolume} />
       <p className="ui-label mt-2">
         {liveInput
-          ? "These shape the synthetic voice. With a live microphone or tab stream active, the external audio stream is the source."
+          ? "These shape the built-in source. While a microphone or another tab is live, that is what the lab analyses."
           : "The voice is a pulse train through three resonators. Its formants are known exactly, so you can check the readings against what you set."}
       </p>
     </div>
@@ -434,10 +470,10 @@ function TraceInspector() {
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-3 py-2.5">
         <div className="flex flex-wrap items-center gap-2.5">
           <span className="mark bg-accent!" aria-hidden />
-          <h2 className="text-[13px] font-semibold tracking-wide text-ink uppercase">
+          <h2 className="text-[13px] font-semibold text-ink">
             Trace &amp; Re-Run Signal
           </h2>
-          <span className="bg-raised px-2 py-0.5 text-[11px] font-medium text-muted">
+          <span className="bg-raised px-2 py-0.5 text-[12px] font-medium text-muted rounded-(--radius-sm)">
             {frozen
               ? modifiedWhileFrozen
                 ? `Frozen slice · Re-computed (${recomputeCount}×) vs Baseline`
@@ -470,7 +506,7 @@ function TraceInspector() {
                 setTimeout(() => useLabStore.getState().captureAndTrace(), 40);
               }
             }}
-            className="ui-tab min-h-8 border border-line px-2.5 text-[12px] font-medium"
+            className="ui-tab min-h-8 border border-line px-2.5 text-[12px] font-medium rounded-(--radius-sm)"
             title="Capture the latest 512-sample voice slice as the new baseline"
           >
             Capture new slice
@@ -479,7 +515,7 @@ function TraceInspector() {
             <button
               type="button"
               onClick={restoreBaseline}
-              className="ui-tab min-h-8 border border-line px-2.5 text-[12px] font-medium text-accent"
+              className="ui-tab min-h-8 border border-line px-2.5 text-[12px] font-medium text-accent rounded-(--radius-sm)"
             >
               Restore baseline
             </button>
@@ -498,7 +534,7 @@ function TraceInspector() {
       <div
         role="tablist"
         aria-label="8-Stage DSP Pipeline"
-        className="no-scrollbar flex items-center gap-1 overflow-x-auto border-b border-line bg-raised/50 px-3 py-2"
+        className="no-scrollbar flex items-center gap-1 overflow-x-auto border-b border-line bg-raised/50 px-3 py-2 rounded-(--radius-sm)"
       >
         {TRACE_STAGES.map((st, idx) => {
           const current = st.id === traceStage;
@@ -511,14 +547,14 @@ function TraceInspector() {
                 onClick={() => setTraceStage(st.id)}
                 className={`px-2.5 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors ${
                   current
-                    ? "bg-accent text-[#08090c] font-semibold"
+                    ? "bg-accent text-accent-ink font-semibold"
                     : "bg-raised text-muted hover:text-ink"
                 }`}
               >
                 [ {st.pill} ]
               </button>
               {idx < TRACE_STAGES.length - 1 && (
-                <span className="px-0.5 text-[11px] text-muted select-none" aria-hidden>
+                <span className="px-0.5 text-[12px] text-muted select-none" aria-hidden>
                   ➔
                 </span>
               )}
@@ -558,13 +594,13 @@ function TraceInspector() {
                   aria-checked={options.windowType === w}
                   onClick={() => updateOptions({ windowType: w })}
                   className={`px-2.5 py-1 text-[12px] font-medium ${
-                    options.windowType === w ? "bg-accent text-[#08090c] font-semibold" : "bg-raised text-muted hover:text-ink"
+                    options.windowType === w ? "bg-accent text-accent-ink font-semibold" : "bg-raised text-muted hover:text-ink"
                   }`}
                 >
                   {WINDOW_INFO[w].label}
                 </button>
               ))}
-              <span className="ui-fig ml-1 text-[11px] text-muted">
+              <span className="ui-fig ml-1 text-[12px] text-muted">
                 Sidelobe {winInfo.peakSidelobeDb.toFixed(1)} dB · Main lobe {winInfo.mainLobeBins} bins
               </span>
             </div>
@@ -595,7 +631,7 @@ function TraceInspector() {
               onClick={() => toggleBypassStage(traceStage)}
               className={`px-2.5 py-1 text-[12px] font-medium transition-colors ${
                 isBypassed
-                  ? "bg-accent text-[#08090c] font-semibold"
+                  ? "bg-accent text-accent-ink font-semibold"
                   : "border border-line bg-raised text-ink hover:border-accent"
               }`}
             >
@@ -609,9 +645,9 @@ function TraceInspector() {
       <div className="grid grid-cols-12 border-b border-line">
         {/* LEFT COLUMN: BEFORE (Stage Input) */}
         <div className="col-span-12 flex flex-col border-b border-line md:col-span-6 md:border-r md:border-b-0">
-          <div className="flex items-baseline justify-between gap-2 border-b border-line bg-raised/30 px-3 py-1.5">
+          <div className="flex items-baseline justify-between gap-2 border-b border-line bg-raised/30 px-3 py-1.5 rounded-(--radius-sm)">
             <span className="text-[12px] font-semibold text-ink">{spec.beforeTitle}</span>
-            <span className="text-[11px] text-muted">{spec.beforeSub}</span>
+            <span className="text-[12px] text-muted">{spec.beforeSub}</span>
           </div>
           <Trace
             kind={spec.beforeTrace}
@@ -625,9 +661,9 @@ function TraceInspector() {
 
         {/* RIGHT COLUMN: AFTER (Stage Output) */}
         <div className="col-span-12 flex flex-col md:col-span-6">
-          <div className="flex items-baseline justify-between gap-2 border-b border-line bg-raised/30 px-3 py-1.5">
+          <div className="flex items-baseline justify-between gap-2 border-b border-line bg-raised/30 px-3 py-1.5 rounded-(--radius-sm)">
             <span className="text-[12px] font-semibold text-ink">{spec.afterTitle}</span>
-            <span className="text-[11px] text-muted">{spec.afterSub}</span>
+            <span className="text-[12px] text-muted">{spec.afterSub}</span>
           </div>
           {spec.afterTrace === "plate" ? (
             <PlateStage interactive showNodalLines={nodal} className="h-[220px] w-full" />
@@ -644,7 +680,7 @@ function TraceInspector() {
       </div>
 
       {/* Live Stage Telemetry Strip (Baseline vs Current when frozen & modified) */}
-      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5 border-b border-line bg-raised/40 px-3 py-2 text-[12px]">
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5 border-b border-line bg-raised/40 px-3 py-2 text-[12px] rounded-(--radius-sm)">
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
           <span>
             <span className="text-muted">Params:</span>{" "}
@@ -659,14 +695,14 @@ function TraceInspector() {
             </span>
           </span>
           <span>
-            <span className="text-muted">Formants (AFTER):</span>{" "}
+            <span className="text-muted">Formants, after:</span>{" "}
             <span className="ui-fig text-ink">
               F1 {Math.round(active.formants.f1)} Hz · F2 {Math.round(active.formants.f2)} Hz · F3 {Math.round(active.formants.f3)} Hz
             </span>
           </span>
           {modifiedWhileFrozen && (
             <span>
-              <span className="text-muted">Baseline (BEFORE):</span>{" "}
+              <span className="text-muted">Baseline, before:</span>{" "}
               <span className="ui-fig text-muted">
                 F1 {Math.round(base.formants.f1)} Hz · F2 {Math.round(base.formants.f2)} Hz · F3 {Math.round(base.formants.f3)} Hz
               </span>
@@ -692,17 +728,17 @@ function TraceInspector() {
       {/* Bottom Strip: WHY THIS STAGE MATTERS + Expandable SHOW MATHEMATICS Tape */}
       <div className="px-3 py-2.5">
         <p className="text-[13px] leading-relaxed text-ink">
-          <strong className="font-semibold text-accent uppercase">Why this stage matters: </strong>
+          <strong className="font-semibold text-accent">Why this stage matters: </strong>
           {spec.why}
         </p>
 
         {showMath && (
           <div className="mt-3 grid grid-cols-12 gap-3 border-t border-line pt-3 text-[12px]">
             <div className="col-span-12 space-y-1.5 lg:col-span-7">
-              <div className="text-[11px] font-semibold tracking-wider text-muted uppercase">
+              <div className="text-[12px] font-semibold text-muted">
                 Live Captured Frame Numerical Tape (N = 512, fs = {active.analysisRate} Hz)
               </div>
-              <div className="ui-fig overflow-x-auto bg-raised p-2.5 leading-relaxed text-ink">
+              <div className="ui-fig overflow-x-auto bg-raised p-2.5 leading-relaxed text-ink rounded-(--radius-sm)">
                 <div>
                   <span className="text-muted">rawDecimated x[0..5]   = </span>
                   {fmtArr(sb.rawDecimated, 6, 4)}
@@ -734,11 +770,11 @@ function TraceInspector() {
             </div>
 
             <div className="col-span-12 lg:col-span-5">
-              <div className="mb-1.5 text-[11px] font-semibold tracking-wider text-muted uppercase">
+              <div className="mb-1.5 text-[12px] font-semibold text-muted">
                 Extracted Upper-Half-Plane Roots (r, θ) → (F_i, B_i)
               </div>
-              <div className="max-h-[152px] overflow-y-auto bg-raised p-2">
-                <table className="ui-fig w-full text-left text-[11px]">
+              <div className="max-h-[152px] overflow-y-auto bg-raised p-2 rounded-(--radius-sm)">
+                <table className="ui-fig w-full text-left text-[12px]">
                   <thead>
                     <tr className="border-b border-line text-muted">
                       <th className="pb-1">Root z</th>
@@ -858,7 +894,7 @@ function LiveInputMonitor() {
           ? `Looping your recorded voice · F0 ${Math.round(t.stability.f0Hz)} Hz · F1 ${Math.round(t.formants.f1)} Hz · F2 ${Math.round(t.formants.f2)} Hz · ${vowelGlyph(near)} /${near.symbol}/`
           : "Looping and analyzing your 3-second recorded clip";
       } else if (isFrozen) {
-        status.textContent = "PAUSED ON CAPTURED VOICE";
+        status.textContent = "Paused on the captured voice";
         detail.textContent = `F0 ${Math.round(t.stability.f0Hz)} Hz · F1 ${Math.round(t.formants.f1)} Hz · F2 ${Math.round(t.formants.f2)} Hz`;
       } else if (liveVoiced && t.formants.f1 > 0) {
         const near = nearestVowel(t.formants.f1, t.formants.f2);
@@ -897,10 +933,10 @@ function LiveInputMonitor() {
           />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <span ref={statusRef} className="font-semibold tracking-wide text-ink uppercase">
+              <span ref={statusRef} className="font-semibold text-ink">
                 ○ MICROPHONE READY — SPEAK NOW
               </span>
-              <span className="truncate bg-surface px-1.5 py-0.5 text-[11px] text-muted">
+              <span className="truncate bg-surface px-1.5 py-0.5 text-[12px] text-muted">
                 {deviceLabel ?? (sourceMode === "mic" ? "Microphone active" : "Shared tab audio")}
               </span>
             </div>
@@ -912,9 +948,9 @@ function LiveInputMonitor() {
 
         {/* Center: Live Mic Level Bar */}
         <div className="flex min-w-[190px] flex-1 items-center gap-2.5">
-          <span className="text-[11px] font-medium whitespace-nowrap text-muted uppercase">Mic Level</span>
+          <span className="text-[12px] font-medium whitespace-nowrap text-muted">Mic Level</span>
           <div
-            className="relative h-3 flex-1 overflow-hidden border border-line bg-surface"
+            className="relative h-3 flex-1 overflow-hidden border border-line bg-surface rounded-(--radius-sm)"
             title="Live microphone input level"
           >
             <div
@@ -933,8 +969,8 @@ function LiveInputMonitor() {
               onClick={startRecording3s}
               className={`px-3 py-1.5 text-[12px] font-semibold transition-colors ${
                 isRecordingClip
-                  ? "bg-accent text-[#08090c] animate-pulse"
-                  : "bg-accent text-[#08090c] hover:opacity-90"
+                  ? "bg-accent text-accent-ink animate-pulse"
+                  : "bg-accent text-accent-ink hover:opacity-90"
               }`}
             >
               {isRecordingClip
@@ -963,7 +999,7 @@ function LiveInputMonitor() {
           <button
             type="button"
             onClick={() => (frozen ? toggleFreeze() : captureAndTrace())}
-            className="border border-line bg-surface px-2.5 py-1.5 text-[12px] font-medium text-ink hover:border-accent"
+            className="border border-line bg-surface px-2.5 py-1.5 text-[12px] font-medium text-ink hover:border-accent rounded-(--radius-sm)"
           >
             {frozen ? "Resume Live" : "Inspect & Trace Voice"}
           </button>
@@ -973,7 +1009,7 @@ function LiveInputMonitor() {
   );
 }
 
-const SIDE_TABS = ["Readings", "Voice", "Analysis"] as const;
+const SIDE_TABS = ["Readings", "Source", "Analysis"] as const;
 
 export function Lab() {
   const targetId = useLabStore((s) => s.targetId);
@@ -998,12 +1034,24 @@ export function Lab() {
   const target = findVowel(targetId);
   const solo = activeView !== "all";
   const liveInput = sourceMode === "mic" || sourceMode === "stream";
+  const wave = useLabStore((s) => s.synth.wave);
+  const waveHz = useLabStore((s) => s.synth.waveHz);
+  const testSignal = wave === "voice" ? null : wave;
 
-  // /lab?vowel=ii opens holding that vowel (the homepage form and the atlas link here).
+  // /lab?vowel=ii opens holding that vowel; /lab?signal=square&hz=440 opens on a test signal;
+  // /lab?exp=3 opens an experiment. The homepage, the atlas and the classroom page link here.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const id = params.get("vowel");
     if (id && VOWEL_TARGETS.some((v) => v.id === id)) useLabStore.getState().selectTarget(id, true);
+    const signal = params.get("signal");
+    if (signal && signal in SIGNAL_INFO) {
+      const hz = Number(params.get("hz"));
+      useLabStore.getState().updateSynth({
+        wave: signal as SignalKind,
+        ...(hz >= SIGNAL_HZ_RANGE[0] && hz <= SIGNAL_HZ_RANGE[1] ? { waveHz: hz } : {}),
+      });
+    }
     const expParam = Number(params.get("exp"));
     if (expParam >= 1 && expParam <= 5) {
       useLabStore.getState().setActiveExperiment(expParam as 1 | 2 | 3 | 4 | 5);
@@ -1013,50 +1061,49 @@ export function Lab() {
   const plotHeight = solo ? "h-[min(62svh,620px)]" : "";
 
   return (
-    <main id="content" className="wrap min-h-svh pt-(--nav-h) pb-6 text-[13px] leading-[1.4]">
-      <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-2 py-3.5">
+    <main id="content" className="wrap min-h-svh pt-(--nav-h) pb-8 text-[14px] leading-[1.4]">
+      <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3 py-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-[24px] leading-tight font-semibold tracking-[-0.02em] text-ink">Laboratory</h1>
+            <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-ink">Laboratory</h1>
             <div
               role="group"
-              aria-label="Laboratory Mode Switcher"
-              className="inline-flex border border-line bg-surface p-0.5"
+              aria-label="Lab mode"
+              className="seg"
             >
               <button
                 type="button"
                 aria-pressed={labMode === "workspace"}
                 onClick={() => setLabMode("workspace")}
-                className={`px-3 py-1 text-[12px] font-semibold tracking-wide transition-colors ${
-                  labMode === "workspace"
-                    ? "bg-accent text-[#08090c]"
-                    : "text-muted hover:text-ink"
-                }`}
-              >
-                LAB WORKSPACE
+                >
+                Workspace
               </button>
               <button
                 type="button"
                 aria-pressed={labMode === "experiments"}
                 onClick={() => setLabMode("experiments")}
-                className={`px-3 py-1 text-[12px] font-semibold tracking-wide transition-colors ${
-                  labMode === "experiments"
-                    ? "bg-accent text-[#08090c]"
-                    : "text-accent hover:text-ink"
-                }`}
+                data-hot={labMode === "experiments"}
               >
-                ★ 5 DSP EXPERIMENTS (BREAK THE SIGNAL)
+                Break the signal: 5 experiments
               </button>
             </div>
           </div>
-          <p className="mt-0.5 text-[14px] text-muted">
-            Target{" "}
-            <span lang={target.banglaSymbol ? "bn" : undefined} className="bn text-ink">
-              {vowelGlyph(target)}
-            </span>{" "}
-            /{target.symbol}/, <span className="ui-fig text-ink"><Readout field="bark" /></span> Bark away.{" "}
-            <span className="text-ink"><Readout field="guidance" /></span>
-          </p>
+          {testSignal && !liveInput ? (
+            <p className="mt-1 text-[15px] text-muted">
+              Test signal: <span className="text-ink">{SIGNAL_INFO[testSignal].label.toLowerCase()}</span>
+              {testSignal === "sweep" || testSignal === "noise" ? "" : <>, <span className="ui-fig text-ink">{waveHz}</span> Hz</>}.{" "}
+              <span className="text-ink">{SIGNAL_INFO[testSignal].spectrum}</span>
+            </p>
+          ) : (
+            <p className="mt-1 text-[15px] text-muted">
+              Target{" "}
+              <span lang={target.banglaSymbol ? "bn" : undefined} className="bn text-ink">
+                {vowelGlyph(target)}
+              </span>{" "}
+              /{target.symbol}/, <span className="ui-fig text-ink"><Readout field="bark" /></span> Bark away.{" "}
+              <span className="text-ink"><Readout field="guidance" /></span>
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
           <SourceSwitch />
@@ -1065,9 +1112,9 @@ export function Lab() {
               type="button"
               aria-pressed={traceOpen}
               onClick={() => (traceOpen ? setTraceOpen(false) : captureAndTrace())}
-              className="btn min-h-9! px-3! py-1! text-[12px] font-semibold tracking-wide"
+              className="btn btn-sm"
             >
-              [ TRACE THIS SIGNAL ]
+              Trace this frame
             </button>
             <button type="button" aria-pressed={frozen} onClick={toggleFreeze} className="ui-tab min-h-11 text-[13px] font-medium lg:min-h-8">
               Freeze
@@ -1082,13 +1129,13 @@ export function Lab() {
       <SignalChainHeader />
 
       {micStatus === "requesting" && (
-        <p role="status" className="mb-3 flex items-center gap-2.5 bg-raised px-3 py-2.5 text-[13px] text-ink">
+        <p role="status" className="mb-3 flex items-center gap-2.5 bg-raised px-3 py-2.5 text-[13px] text-ink rounded-(--radius-sm)">
           <span className="mark animate-pulse bg-accent!" aria-hidden />
           Waiting for the browser&rsquo;s permission to access your microphone or tab audio…
         </p>
       )}
       {micError && (
-        <p role="alert" className="mb-3 border border-accent/50 bg-raised px-3 py-2.5 text-[13px] text-ink">
+        <p role="alert" className="mb-3 border border-accent/50 bg-raised px-3 py-2.5 text-[13px] text-ink rounded-(--radius-sm)">
           {micError}
         </p>
       )}
@@ -1146,7 +1193,7 @@ export function Lab() {
               ))}
             </header>
             {side === "Readings" && <Readings />}
-            {side === "Voice" && <VoiceControls />}
+            {side === "Source" && <VoiceControls />}
             {side === "Analysis" && <AnalysisControls />}
           </section>
         )}
@@ -1188,6 +1235,28 @@ export function Lab() {
         <Panel view="poles" title="Z-plane" kind="derived" className="col-span-12 lg:col-span-3">
           <Trace kind="zplane" inspect compareBaseline draggablePoles label="Poles of the vocal-tract model inside the unit circle (drag F1 or F2)" className={`w-full ${plotHeight || "h-[260px] lg:h-[clamp(150px,20svh,240px)]"}`} />
         </Panel>
+
+        <Panel view="time" title="Spectrogram" kind="measured" className="col-span-12 lg:col-span-8">
+          <Trace
+            kind="spectrogram"
+            label="Scrolling spectrogram: time left to right, frequency upward, with formant trails"
+            className={`w-full ${plotHeight || "h-[220px] lg:h-[clamp(170px,24svh,280px)]"}`}
+          />
+        </Panel>
+        {(activeView === "all" || activeView === "time") && (
+          <section className="ui-panel col-span-12 flex min-w-0 flex-col lg:col-span-4">
+            <header className="flex min-h-10 items-center border-b border-line px-3">
+              <h2 className="flex items-center gap-2.5 text-[13px] font-medium text-ink">
+                <Prov kind="measured">Pitch track</Prov>
+              </h2>
+            </header>
+            <Trace
+              kind="pitchTrack"
+              label="Pitch of the signal over the last four seconds"
+              className="h-[200px] w-full lg:h-[clamp(170px,24svh,280px)]"
+            />
+          </section>
+        )}
 
         {solo && (
           <section className="ui-panel col-span-12">

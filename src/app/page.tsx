@@ -1,5 +1,6 @@
 import { Closing, PrivacyClaim } from "@/components/home/Closing";
 import { Hero } from "@/components/home/Hero";
+import { InstrumentRail } from "@/components/home/InstrumentRail";
 import { Lineage } from "@/components/home/Lineage";
 import { MeasuredList } from "@/components/home/MeasuredList";
 import { SignalChain } from "@/components/home/SignalChain";
@@ -12,6 +13,7 @@ export default function HomePage() {
     <>
       <main id="content">
         <Hero />
+        <InstrumentRail />
         <SignalChain />
         <VowelInstrument />
         <MeasuredList />

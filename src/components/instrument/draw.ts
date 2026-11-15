@@ -1,6 +1,7 @@
 import { chladniModes, type Modes } from "@/lib/chladni";
 import { findVowel, LOCK_SCORE, VOWEL_TARGETS, vowelGlyph } from "@/lib/dsp/vowel-targets";
 import { getWindow } from "@/lib/dsp/windows";
+import { THEME_EVENT } from "@/lib/theme";
 import type { DSPFrameTelemetry } from "@/types/dsp";
 
 /**
@@ -9,22 +10,59 @@ import type { DSPFrameTelemetry } from "@/types/dsp";
  * and every changing number is shown in the DOM by <Readout>, not painted.
  */
 
+/** The canvas palette. It mirrors the CSS tokens and follows the theme: see syncInk(). */
 export const INK = {
-  bg: "#08090c",
-  surface: "#101217",
-  line: "#262a33",
-  grid: "#1b1e26",
-  ink: "#f3f0e6",
-  inkSoft: "rgba(243, 240, 230, 0.5)",
-  inkFaint: "rgba(243, 240, 230, 0.22)",
-  muted: "#8a909e",
-  mutedSoft: "rgba(138, 144, 158, 0.4)",
-  accent: "#ff5500",
-  accentSoft: "rgba(255, 85, 0, 0.4)",
-  lpc: "#00e5ff",
-  lock: "#10b981",
-  lockSoft: "rgba(16, 185, 129, 0.16)",
-} as const;
+  bg: "#0a0a0b",
+  surface: "#141416",
+  line: "#2c2c33",
+  grid: "#1c1c21",
+  ink: "#f7f4ec",
+  inkSoft: "rgba(247, 244, 236, 0.5)",
+  inkFaint: "rgba(247, 244, 236, 0.22)",
+  muted: "#9c9ca8",
+  mutedSoft: "rgba(156, 156, 168, 0.4)",
+  accent: "#ff4d00",
+  accentSoft: "rgba(255, 77, 0, 0.4)",
+  lpc: "#1fdcff",
+  lpcSoft: "rgba(31, 220, 255, 0.38)",
+  lock: "#19c98c",
+  lockSoft: "rgba(25, 201, 140, 0.16)",
+};
+
+function soft(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/** Re-read the palette from the page's CSS tokens. Canvases redraw every frame, so they follow at once. */
+export function syncInk(): void {
+  if (typeof document === "undefined") return;
+  const css = getComputedStyle(document.documentElement);
+  const read = (name: string, fallback: string) => {
+    const value = css.getPropertyValue(name).trim();
+    return /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+  };
+  INK.bg = read("--bg", INK.bg);
+  INK.surface = read("--surface", INK.surface);
+  INK.line = read("--line", INK.line);
+  INK.grid = read("--grid", INK.grid);
+  INK.ink = read("--ink", INK.ink);
+  INK.muted = read("--muted", INK.muted);
+  INK.accent = read("--accent", INK.accent);
+  INK.lpc = read("--lpc", INK.lpc);
+  INK.lock = read("--lock", INK.lock);
+  INK.inkSoft = soft(INK.ink, 0.5);
+  INK.inkFaint = soft(INK.ink, 0.22);
+  INK.mutedSoft = soft(INK.muted, 0.4);
+  INK.accentSoft = soft(INK.accent, 0.4);
+  INK.lpcSoft = soft(INK.lpc, 0.38);
+  INK.lockSoft = soft(INK.lock, 0.16);
+}
+
+if (typeof window !== "undefined") {
+  syncInk();
+  window.addEventListener(THEME_EVENT, syncInk);
+}
 
 export type TraceKind =
   | "mini"
@@ -45,6 +83,8 @@ export type TraceKind =
   | "spectrum"
   | "zplane"
   | "vowel"
+  | "spectrogram"
+  | "pitchTrack"
   | "figure";
 
 export interface TrailView {
@@ -79,7 +119,22 @@ export interface DrawState {
   selectedPoleFormant: 1 | 2;
   /** Filled by the draw function while the pointer is over the plot. */
   hover: string;
+  /** Spectrogram: its own scrolling bitmap, one reusable column and a colour table for the theme. */
+  gram: HTMLCanvasElement | null;
+  gramCtx: CanvasRenderingContext2D | null;
+  gramCol: ImageData | null;
+  lut: Uint8ClampedArray;
+  lutKey: string;
+  /** Timestamp of the last frame added, so a frozen frame is not painted twice. */
+  gramStamp: number;
+  /** Pitch track: the last few seconds of F0, 0 where unvoiced. */
+  track: Float32Array;
+  trackHead: number;
+  trackStamp: number;
 }
+
+/** Frames kept by the pitch track: about four seconds at sixty a second. */
+const TRACK_POINTS = 240;
 
 export function createDrawState(): DrawState {
   return {
@@ -99,6 +154,15 @@ export function createDrawState(): DrawState {
     draggablePoles: false,
     selectedPoleFormant: 1,
     hover: "",
+    gram: null,
+    gramCtx: null,
+    gramCol: null,
+    lut: new Uint8ClampedArray(257 * 3),
+    lutKey: "",
+    gramStamp: -1,
+    track: new Float32Array(TRACK_POINTS),
+    trackHead: 0,
+    trackStamp: -1,
   };
 }
 
@@ -516,7 +580,7 @@ function spectrum(ctx: Ctx, s: DrawState, t: DSPFrameTelemetry, fft: boolean, lp
       ctx.stroke();
     }
     if (lpc) {
-      ctx.strokeStyle = "rgba(0, 229, 255, 0.38)";
+      ctx.strokeStyle = INK.lpcSoft;
       ctx.lineWidth = 1.4;
       ctx.beginPath();
       const baseLpc = s.baseline.lpcEnvelopeDb;
@@ -1119,6 +1183,179 @@ const drawFigure: DrawFn = (ctx, s, t) => {
   paintDotFigure(ctx, s.w, s.h, s.modes.m, s.modes.n, INK.ink, INK.line);
 };
 
+// ── Spectrogram: time runs left to right, frequency upward, loudness as heat ──
+
+const GRAM_MAX_HZ = 5000;
+const GRAM_FLOOR_DB = -95;
+const GRAM_CEIL_DB = -18;
+/** Pixels the picture moves per frame. */
+const GRAM_STEP = 2;
+const GRAM_KHZ = ["0", "1 kHz", "2", "3", "4", "5"];
+
+function hexInto(hex: string, out: Uint8ClampedArray, o: number): void {
+  const n = parseInt(hex.slice(1), 16);
+  out[o] = n >> 16;
+  out[o + 1] = (n >> 8) & 255;
+  out[o + 2] = n & 255;
+}
+
+/** Heat from the ground colour through the accent to the ink; entry 256 is the formant colour. */
+function buildLut(s: DrawState): void {
+  const stops = new Uint8ClampedArray(9);
+  hexInto(INK.bg, stops, 0);
+  hexInto(INK.accent, stops, 3);
+  hexInto(INK.ink, stops, 6);
+  for (let i = 0; i < 256; i++) {
+    const u = i / 255;
+    const from = u < 0.6 ? 0 : 3;
+    const k = u < 0.6 ? u / 0.6 : (u - 0.6) / 0.4;
+    for (let c = 0; c < 3; c++) s.lut[i * 3 + c] = stops[from + c] + (stops[from + 3 + c] - stops[from + c]) * k;
+  }
+  hexInto(INK.lpc, s.lut, 256 * 3);
+}
+
+const drawSpectrogram: DrawFn = (ctx, s, t) => {
+  const padL = s.bare ? 0 : 36;
+  const padT = s.bare ? 0 : 8;
+  const padB = s.bare ? 0 : 8;
+  const w = Math.max(8, Math.floor(s.w - padL - (s.bare ? 0 : 8)));
+  const h = Math.max(8, Math.floor(s.h - padT - padB));
+
+  if (!s.gram || s.gram.width !== w || s.gram.height !== h) {
+    s.gram = document.createElement("canvas");
+    s.gram.width = w;
+    s.gram.height = h;
+    s.gramCtx = s.gram.getContext("2d");
+    s.gramCol = null;
+    s.lutKey = "";
+  }
+  const g = s.gramCtx;
+  if (!g) return;
+  const key = INK.bg + INK.accent + INK.ink + INK.lpc;
+  if (s.lutKey !== key) {
+    s.lutKey = key;
+    buildLut(s);
+    g.fillStyle = INK.bg;
+    g.fillRect(0, 0, w, h);
+  }
+
+  if (t.timestampMs !== s.gramStamp) {
+    s.gramStamp = t.timestampMs;
+    g.globalCompositeOperation = "copy";
+    g.drawImage(s.gram, -GRAM_STEP, 0);
+    g.globalCompositeOperation = "source-over";
+    const col = (s.gramCol ??= g.createImageData(GRAM_STEP, h));
+    const data = col.data;
+    const bins = t.fftMagnitudeDb.length;
+    const binsPerHz = bins / (t.analysisRate / 2);
+    const lut = s.lut;
+    for (let y = 0; y < h; y++) {
+      const bin = Math.min(bins - 1, Math.round((1 - y / (h - 1)) * GRAM_MAX_HZ * binsPerHz));
+      const v = clamp01((t.fftMagnitudeDb[bin] - GRAM_FLOOR_DB) / (GRAM_CEIL_DB - GRAM_FLOOR_DB));
+      const i = ((v * 255) | 0) * 3;
+      for (let x = 0; x < GRAM_STEP; x++) {
+        const o = (y * GRAM_STEP + x) * 4;
+        data[o] = lut[i];
+        data[o + 1] = lut[i + 1];
+        data[o + 2] = lut[i + 2];
+        data[o + 3] = 255;
+      }
+    }
+    // The tracked formants leave a trail on top, the way a phonetician reads a spectrogram.
+    if (t.voiced && t.formants.confidence > 0.05) {
+      for (let f = 0; f < 3; f++) {
+        const hz = f === 0 ? t.formants.f1 : f === 1 ? t.formants.f2 : t.formants.f3;
+        if (!(hz > 0) || hz >= GRAM_MAX_HZ) continue;
+        const y0 = Math.round((1 - hz / GRAM_MAX_HZ) * (h - 1));
+        for (let y = Math.max(0, y0 - 1); y <= Math.min(h - 1, y0); y++) {
+          for (let x = 0; x < GRAM_STEP; x++) {
+            const o = (y * GRAM_STEP + x) * 4;
+            data[o] = lut[768];
+            data[o + 1] = lut[769];
+            data[o + 2] = lut[770];
+          }
+        }
+      }
+    }
+    g.putImageData(col, w - GRAM_STEP, 0);
+  }
+
+  ctx.drawImage(s.gram, padL, padT, w, h);
+  if (!s.bare) {
+    ctx.font = s.font;
+    ctx.fillStyle = INK.muted;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (let k = 0; k < GRAM_KHZ.length; k++) {
+      ctx.fillText(GRAM_KHZ[k], padL - 8, padT + (1 - (k * 1000) / GRAM_MAX_HZ) * (h - 1));
+    }
+  }
+};
+
+// ── Pitch track: F0 over the last few seconds, on a scale where octaves are equal steps ──
+
+const TRACK_MIN_HZ = 70;
+const TRACK_MAX_HZ = 480;
+const TRACK_TICKS = [100, 200, 400];
+const TRACK_LABELS = ["100", "200", "400 Hz"];
+const TRACK_SPAN = Math.log(TRACK_MAX_HZ / TRACK_MIN_HZ);
+
+const drawPitchTrack: DrawFn = (ctx, s, t) => {
+  if (t.timestampMs !== s.trackStamp) {
+    s.trackStamp = t.timestampMs;
+    s.track[s.trackHead] = t.voiced ? t.stability.f0Hz : 0;
+    s.trackHead = (s.trackHead + 1) % s.track.length;
+  }
+  const padL = s.bare ? 0 : 44;
+  const padT = 8;
+  const w = s.w - padL - (s.bare ? 0 : 8);
+  const h = s.h - padT - 8;
+  const yOf = (hz: number) => padT + (1 - Math.log(hz / TRACK_MIN_HZ) / TRACK_SPAN) * h;
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = INK.grid;
+  ctx.font = s.font;
+  ctx.fillStyle = INK.muted;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.beginPath();
+  for (let i = 0; i < TRACK_TICKS.length; i++) {
+    const y = Math.round(yOf(TRACK_TICKS[i])) + 0.5;
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + w, y);
+    if (!s.bare) ctx.fillText(TRACK_LABELS[i], padL - 8, y);
+  }
+  ctx.stroke();
+
+  const n = s.track.length;
+  ctx.strokeStyle = INK.accent;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  let pen = false;
+  let lastX = 0;
+  let lastY = 0;
+  for (let i = 0; i < n; i++) {
+    const hz = s.track[(s.trackHead + i) % n];
+    if (hz >= TRACK_MIN_HZ && hz <= TRACK_MAX_HZ) {
+      lastX = padL + (i / (n - 1)) * w;
+      lastY = yOf(hz);
+      if (pen) ctx.lineTo(lastX, lastY);
+      else ctx.moveTo(lastX, lastY);
+      pen = true;
+    } else {
+      pen = false;
+    }
+  }
+  ctx.stroke();
+  if (pen) {
+    ctx.fillStyle = INK.accent;
+    ctx.beginPath();
+    ctx.arc(lastX, lastY, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+};
+
 export const DRAW: Record<TraceKind, DrawFn> = {
   mini: drawMini,
   voice: drawVoice,
@@ -1138,5 +1375,7 @@ export const DRAW: Record<TraceKind, DrawFn> = {
   spectrum: drawSpectrum,
   zplane: drawZPlane,
   vowel: drawVowel,
+  spectrogram: drawSpectrogram,
+  pitchTrack: drawPitchTrack,
   figure: drawFigure,
 };

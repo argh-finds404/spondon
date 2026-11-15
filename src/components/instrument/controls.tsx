@@ -44,7 +44,7 @@ export function VowelKeys({ className }: { className?: string }) {
 
   return (
     <div data-ui className={className}>
-      <div role="group" aria-label="Vowel" className="grid grid-cols-4 gap-0.5 sm:grid-cols-9">
+      <div role="group" aria-label="Vowel" className="grid grid-cols-4 gap-1 sm:grid-cols-9">
         {VOWEL_TARGETS.map((v) => {
           const pressed = !tour && v.id === targetId;
           return (
@@ -54,7 +54,7 @@ export function VowelKeys({ className }: { className?: string }) {
               aria-pressed={pressed}
               aria-label={`${v.label} ${v.symbol}`}
               onClick={() => selectTarget(v.id, !liveInput)}
-              className="group flex min-h-16 flex-col items-center justify-center gap-0.5 bg-raised transition-[background-color,transform] duration-150 hover:bg-[#20242d] active:scale-[0.97]"
+              className="group flex min-h-16 flex-col items-center justify-center gap-0.5 rounded-(--radius-sm) bg-raised transition-[background-color,transform] duration-150 hover:bg-hover active:scale-[0.96]"
             >
               <span
                 lang={v.banglaSymbol ? "bn" : undefined}
@@ -63,7 +63,7 @@ export function VowelKeys({ className }: { className?: string }) {
               >
                 {v.banglaSymbol ?? v.symbol}
               </span>
-              <span className="text-[12px] text-muted">/{v.symbol}/</span>
+              <span className="text-[13px] text-muted">/{v.symbol}/</span>
             </button>
           );
         })}
@@ -72,7 +72,7 @@ export function VowelKeys({ className }: { className?: string }) {
           aria-pressed={tour}
           disabled={liveInput}
           onClick={() => updateSynth({ tour: !tour })}
-          className="col-span-4 flex min-h-11 items-center justify-center bg-raised transition-[background-color,transform] duration-150 hover:bg-[#20242d] active:scale-[0.97] disabled:opacity-45 sm:col-span-1 sm:min-h-16"
+          className="col-span-4 flex min-h-11 items-center justify-center rounded-(--radius-sm) bg-raised transition-[background-color,transform] duration-150 hover:bg-hover active:scale-[0.96] disabled:opacity-45 sm:col-span-1 sm:min-h-16"
         >
           <span className="ui-tab min-h-6! text-[13px] font-medium" data-on={tour}>
             Tour all
@@ -83,70 +83,67 @@ export function VowelKeys({ className }: { className?: string }) {
   );
 }
 
+/**
+ * Where the signal comes from. "Built-in" is the synthetic voice or a test signal, computed in the tab;
+ * the other two ask the browser for a live input. Sound is a separate key, because the built-in
+ * source is analysed silently until you want to hear it.
+ */
 export function SourceSwitch({ className }: { className?: string }) {
   const sourceMode = useLabStore((s) => s.sourceMode);
   const micStatus = useLabStore((s) => s.micStatus);
   const setSourceMode = useLabStore((s) => s.setSourceMode);
-  const isSynth = sourceMode === "silent" || sourceMode === "synth";
-  const synthLoud = sourceMode === "synth";
+  const builtIn = sourceMode === "silent" || sourceMode === "synth";
+  const aloud = sourceMode === "synth";
+  const busy = micStatus === "requesting";
 
   return (
-    <div role="radiogroup" aria-label="Audio source" className={`flex flex-wrap items-center gap-2 ${className ?? ""}`}>
-      <div className="flex items-center border border-line bg-raised p-0.5">
+    <div className={`flex flex-wrap items-center gap-2 ${className ?? ""}`}>
+      <div role="radiogroup" aria-label="Signal source" className="seg">
         <button
           type="button"
           role="radio"
-          aria-checked={isSynth}
-          disabled={micStatus === "requesting"}
+          aria-checked={builtIn}
+          disabled={busy}
           onClick={() => {
-            if (!isSynth) void setSourceMode("silent");
+            if (!builtIn) void setSourceMode("silent");
           }}
-          className={`px-3 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors ${
-            isSynth ? "bg-accent text-[#08090c] font-semibold" : "text-muted hover:text-ink"
-          }`}
         >
-          Synth Voice
+          Built-in
         </button>
-        {isSynth && (
-          <button
-            type="button"
-            aria-pressed={synthLoud}
-            onClick={() => void setSourceMode(synthLoud ? "silent" : "synth")}
-            className={`border-l border-line px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap transition-colors ${
-              synthLoud ? "bg-surface text-accent font-semibold" : "text-muted hover:text-ink"
-            }`}
-            title="Toggle speaker sound for the synthetic reference voice"
-          >
-            {synthLoud ? "Sound: ON" : "Sound: OFF"}
-          </button>
-        )}
-
         <button
           type="button"
           role="radio"
           aria-checked={sourceMode === "mic"}
-          disabled={micStatus === "requesting"}
+          data-hot={sourceMode === "mic"}
+          disabled={busy}
           onClick={() => void setSourceMode(sourceMode === "mic" ? "silent" : "mic")}
-          className={`border-l border-line px-3 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors ${
-            sourceMode === "mic" ? "bg-accent text-[#08090c] font-semibold" : "text-muted hover:text-ink"
-          }`}
         >
           Microphone
         </button>
-
         <button
           type="button"
           role="radio"
           aria-checked={sourceMode === "stream"}
-          disabled={micStatus === "requesting"}
+          data-hot={sourceMode === "stream"}
+          disabled={busy}
+          title="Analyse the sound of another browser tab"
           onClick={() => void setSourceMode(sourceMode === "stream" ? "silent" : "stream")}
-          className={`border-l border-line px-3 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors ${
-            sourceMode === "stream" ? "bg-accent text-[#08090c] font-semibold" : "text-muted hover:text-ink"
-          }`}
         >
-          Tab Audio
+          Tab audio
         </button>
       </div>
+      {builtIn && (
+        <div className="seg">
+          <button
+            type="button"
+            aria-pressed={aloud}
+            title="Play the built-in source through your speakers"
+            onClick={() => void setSourceMode(aloud ? "silent" : "synth")}
+          >
+            {aloud ? "Sound on" : "Sound off"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

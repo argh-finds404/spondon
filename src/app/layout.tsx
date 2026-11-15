@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Anek_Bangla, Anek_Latin, Martian_Mono } from "next/font/google";
 import { MotionBridge } from "@/components/site/MotionBridge";
 import { Navbar } from "@/components/site/Navbar";
+import { THEME_BOOT } from "@/lib/theme";
 import "./globals.css";
 
 // One family across both scripts: Anek was drawn for Bangla and Latin together.
@@ -50,16 +51,16 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#08090c",
-  colorScheme: "dark",
+  themeColor: "#0a0a0b",
+  colorScheme: "dark light",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" suppressHydrationWarning className={`${latin.variable} ${bangla.variable} ${figures.variable}`}>
       <body>
-        {/* Entrance animations only hide content once script is known to run. */}
-        <script dangerouslySetInnerHTML={{ __html: "document.documentElement.classList.add('js')" }} />
+        {/* Sets the theme, and marks script as running, before anything is painted. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
         <a
           href="#content"
           className="btn fixed left-4 top-2 z-[60] -translate-y-20 focus-visible:translate-y-0"
