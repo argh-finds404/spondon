@@ -1,7 +1,6 @@
 "use client";
 
 import type { ReactNode } from "react";
-import type { SourceMode } from "@/lib/dsp/audio-controller";
 import { VOWEL_TARGETS } from "@/lib/dsp/vowel-targets";
 import { useLabStore } from "@/store/lab-store";
 
@@ -84,34 +83,70 @@ export function VowelKeys({ className }: { className?: string }) {
   );
 }
 
-const SOURCES: { mode: SourceMode; label: string; hint: string }[] = [
-  { mode: "silent", label: "Silent", hint: "Synthetic voice, analysed without sound" },
-  { mode: "synth", label: "Play synth", hint: "Synthetic voice through your speakers" },
-  { mode: "mic", label: "Microphone", hint: "Your own voice" },
-  { mode: "stream", label: "Tab / YouTube", hint: "Share a browser tab with audio (YouTube, Spotify, recordings)" },
-];
-
 export function SourceSwitch({ className }: { className?: string }) {
   const sourceMode = useLabStore((s) => s.sourceMode);
   const micStatus = useLabStore((s) => s.micStatus);
   const setSourceMode = useLabStore((s) => s.setSourceMode);
+  const isSynth = sourceMode === "silent" || sourceMode === "synth";
+  const synthLoud = sourceMode === "synth";
 
   return (
-    <div role="radiogroup" aria-label="Signal source" className={`flex items-center gap-5 ${className ?? ""}`}>
-      {SOURCES.map((source) => (
+    <div role="radiogroup" aria-label="Audio source" className={`flex flex-wrap items-center gap-2 ${className ?? ""}`}>
+      <div className="flex items-center border border-line bg-raised p-0.5">
         <button
-          key={source.mode}
           type="button"
           role="radio"
-          aria-checked={sourceMode === source.mode}
-          title={source.hint}
+          aria-checked={isSynth}
           disabled={micStatus === "requesting"}
-          onClick={() => void setSourceMode(source.mode)}
-          className="ui-tab min-h-11 text-[13px] font-medium whitespace-nowrap lg:min-h-8"
+          onClick={() => {
+            if (!isSynth) void setSourceMode("silent");
+          }}
+          className={`px-3 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors ${
+            isSynth ? "bg-accent text-[#08090c] font-semibold" : "text-muted hover:text-ink"
+          }`}
         >
-          {source.label}
+          Synth Voice
         </button>
-      ))}
+        {isSynth && (
+          <button
+            type="button"
+            aria-pressed={synthLoud}
+            onClick={() => void setSourceMode(synthLoud ? "silent" : "synth")}
+            className={`border-l border-line px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap transition-colors ${
+              synthLoud ? "bg-surface text-accent font-semibold" : "text-muted hover:text-ink"
+            }`}
+            title="Toggle speaker sound for the synthetic reference voice"
+          >
+            {synthLoud ? "Sound: ON" : "Sound: OFF"}
+          </button>
+        )}
+
+        <button
+          type="button"
+          role="radio"
+          aria-checked={sourceMode === "mic"}
+          disabled={micStatus === "requesting"}
+          onClick={() => void setSourceMode(sourceMode === "mic" ? "silent" : "mic")}
+          className={`border-l border-line px-3 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors ${
+            sourceMode === "mic" ? "bg-accent text-[#08090c] font-semibold" : "text-muted hover:text-ink"
+          }`}
+        >
+          Microphone
+        </button>
+
+        <button
+          type="button"
+          role="radio"
+          aria-checked={sourceMode === "stream"}
+          disabled={micStatus === "requesting"}
+          onClick={() => void setSourceMode(sourceMode === "stream" ? "silent" : "stream")}
+          className={`border-l border-line px-3 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors ${
+            sourceMode === "stream" ? "bg-accent text-[#08090c] font-semibold" : "text-muted hover:text-ink"
+          }`}
+        >
+          Tab Audio
+        </button>
+      </div>
     </div>
   );
 }

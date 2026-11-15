@@ -45,10 +45,20 @@ export class AudioController {
   volume = 0.4;
   inputGain = 2.5;
   deviceLabel: string | null = null;
+  isRecordingClip = false;
+  hasRecordedClip = false;
+  playingRecordedClip = false;
+  recordingProgress = 0;
   onStreamEnded: (() => void) | null = null;
+  onRecordingStateChange: (() => void) | null = null;
 
   private raw: Float32Array<ArrayBuffer>;
   private loop: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private recordBuf: Float32Array<ArrayBuffer> = new Float32Array(0);
+  private recordWritePos = 0;
+  private recordStartMs = 0;
+  private recordDurationMs = 3000;
+  private autoGain = 2.5;
   private listeners = new Set<Listener>();
   private rafId = 0;
   private ctx: AudioContext | null = null;
@@ -56,6 +66,7 @@ export class AudioController {
   private inGain: GainNode | null = null;
   private out: GainNode | null = null;
   private stream: MediaStream | null = null;
+  private streamSource: MediaStreamAudioSourceNode | null = null;
   private voice: { src: AudioBufferSourceNode; gain: GainNode; startedAt: number } | null = null;
 
   constructor(settings: Partial<SynthSettings> = {}, options: Partial<AnalyzerOptions> = {}) {
@@ -170,13 +181,17 @@ export class AudioController {
       analyser.smoothingTimeConstant = 0;
       this.analyser = analyser;
       if ((mode === "mic" || mode === "stream") && this.stream) {
-        // Analysed through a clean pre-gain node, never routed to the speakers (prevents feedback/echo).
+        // Analysed through a clean pre-gain node, never routed live to speakers (prevents feedback/echo).
         const inGain = ctx.createGain();
         inGain.gain.value = mode === "mic" ? this.inputGain : 1;
         this.inGain = inGain;
         const srcNode = ctx.createMediaStreamSource(this.stream);
+        this.streamSource = srcNode;
         srcNode.connect(inGain);
         inGain.connect(analyser);
+        this.out = ctx.createGain();
+        this.out.gain.value = this.volume;
+        this.out.connect(ctx.destination);
       } else {
         this.out = ctx.createGain();
         this.out.gain.value = this.volume;
@@ -190,17 +205,69 @@ export class AudioController {
     }
   }
 
+  /** Start recording a 3-second voice clip from the active microphone into memory. */
+  startRecordingClip(durationSec = 3): void {
+    if (this.mode !== "mic" || !this.ctx) return;
+    this.stopRecordedPlayback();
+    const samples = Math.max(this.analyzer.rawSize, Math.round(this.analyzer.sampleRate * durationSec));
+    this.recordBuf = new Float32Array(samples);
+    this.recordWritePos = 0;
+    this.recordStartMs = performance.now();
+    this.recordDurationMs = durationSec * 1000;
+    this.recordingProgress = 0;
+    this.isRecordingClip = true;
+    this.onRecordingStateChange?.();
+  }
+
+  /** Play back the recorded 3-second voice clip in a continuous loop (and through speakers so the user hears it). */
+  setPlayRecordedClip(play: boolean, audible = true): void {
+    if (!this.hasRecordedClip || this.recordBuf.length === 0) return;
+    this.isRecordingClip = false;
+    this.playingRecordedClip = play;
+    if (play && this.ctx && this.analyser && this.out) {
+      // Disconnect live mic from analyser while playing back the recorded clip
+      try {
+        this.inGain?.disconnect(this.analyser);
+      } catch {
+        /* already disconnected */
+      }
+      this.out.gain.value = audible ? this.volume : 0;
+      this.playBufferLoop(this.recordBuf);
+    } else {
+      this.stopRecordedPlayback();
+    }
+    this.onRecordingStateChange?.();
+  }
+
+  stopRecordedPlayback(): void {
+    this.playingRecordedClip = false;
+    this.voice?.src.stop();
+    this.voice = null;
+    if (this.mode === "mic" && this.inGain && this.analyser) {
+      try {
+        this.inGain.connect(this.analyser);
+      } catch {
+        /* already connected */
+      }
+    }
+  }
+
   /** Back to the silent voice. */
   stop(): void {
     this.release();
     this.mode = "silent";
     this.deviceLabel = null;
+    this.isRecordingClip = false;
+    this.playingRecordedClip = false;
+    this.recordingProgress = 0;
     this.useRate(SILENT_RATE);
   }
 
   private release(): void {
     this.voice?.src.stop();
     this.voice = null;
+    this.streamSource?.disconnect();
+    this.streamSource = null;
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
     this.analyser = null;
@@ -248,10 +315,14 @@ export class AudioController {
 
   /** Swap in the current loop with a 40 ms crossfade, keeping its place in the tour. */
   private playLoop(): void {
-    const { ctx, analyser, out, loop } = this;
-    if (!ctx || !analyser || !out) return;
-    const buffer = ctx.createBuffer(1, loop.length, ctx.sampleRate);
-    buffer.copyToChannel(loop, 0);
+    this.playBufferLoop(this.loop);
+  }
+
+  private playBufferLoop(buf: Float32Array<ArrayBuffer>): void {
+    const { ctx, analyser, out } = this;
+    if (!ctx || !analyser || !out || buf.length === 0) return;
+    const buffer = ctx.createBuffer(1, buf.length, ctx.sampleRate);
+    buffer.copyToChannel(buf, 0);
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.loop = true;
@@ -279,6 +350,58 @@ export class AudioController {
     if (this.mode !== "silent" && analyser) {
       if (ctx && ctx.state === "suspended") void ctx.resume();
       analyser.getFloatTimeDomainData(raw);
+
+      // Automatic software leveler for live microphone so quiet laptop mics work out of the box
+      if (this.mode === "mic" && !this.playingRecordedClip) {
+        let peak = 0;
+        for (let k = 0; k < raw.length; k++) {
+          const a = raw[k] < 0 ? -raw[k] : raw[k];
+          if (a > peak) peak = a;
+        }
+        const targetGain = peak > 0.0012 ? Math.min(10, Math.max(1, 0.35 / peak)) : 1;
+        this.autoGain += (targetGain - this.autoGain) * 0.25;
+        if (this.autoGain > 1.02) {
+          for (let k = 0; k < raw.length; k++) raw[k] *= this.autoGain;
+        }
+      }
+
+      // If recording a 3s clip, append newest samples into recordBuf
+      if (this.isRecordingClip && this.recordBuf.length > 0) {
+        const elapsedMs = Math.max(0, performance.now() - this.recordStartMs);
+        const targetPos = Math.min(
+          this.recordBuf.length,
+          Math.floor((elapsedMs / 1000) * this.analyzer.sampleRate),
+        );
+        const delta = targetPos - this.recordWritePos;
+        if (delta > 0) {
+          const copyCount = Math.min(delta, raw.length);
+          const startInRaw = raw.length - copyCount;
+          const writeStart = targetPos - copyCount;
+          for (let k = 0; k < copyCount; k++) {
+            this.recordBuf[writeStart + k] = raw[startInRaw + k];
+          }
+          this.recordWritePos = targetPos;
+        }
+        this.recordingProgress = Math.min(1, elapsedMs / this.recordDurationMs);
+        if (elapsedMs >= this.recordDurationMs || this.recordWritePos >= this.recordBuf.length) {
+          // Normalize recorded clip peak to 0.55 so playback is clean and audible
+          let maxPeak = 0;
+          for (let i = 0; i < this.recordBuf.length; i++) {
+            const a = Math.abs(this.recordBuf[i]);
+            if (a > maxPeak) maxPeak = a;
+          }
+          if (maxPeak > 1e-4) {
+            const scale = Math.min(12, 0.55 / maxPeak);
+            for (let i = 0; i < this.recordBuf.length; i++) this.recordBuf[i] *= scale;
+          }
+          this.isRecordingClip = false;
+          this.hasRecordedClip = true;
+          this.recordingProgress = 1;
+          this.setPlayRecordedClip(true, true);
+        } else {
+          this.onRecordingStateChange?.();
+        }
+      }
     } else {
       const { loop } = this;
       const length = loop.length;

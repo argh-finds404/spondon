@@ -17,6 +17,10 @@ export interface LabState {
   micDeviceLabel: string | null;
   micGain: number;
   autoCaptureArmed: boolean;
+  isRecordingClip: boolean;
+  hasRecordedClip: boolean;
+  playingRecordedClip: boolean;
+  recordingProgress: number;
   frozen: boolean;
   traceOpen: boolean;
   traceStage: number;
@@ -33,6 +37,8 @@ export interface LabState {
   setSourceMode: (mode: SourceMode) => Promise<void>;
   setMicGain: (gain: number) => void;
   setAutoCaptureArmed: (armed: boolean) => void;
+  startRecording3s: () => void;
+  setPlayRecordedClip: (play: boolean) => void;
   toggleFreeze: () => void;
   setTraceOpen: (open: boolean) => void;
   setTraceStage: (stage: number) => void;
@@ -152,6 +158,11 @@ class LabRuntime {
   private frozen = false;
   private snapshot = createSnapshotBuffer();
   private baselineSnapshot = createSnapshotBuffer();
+  private lastVoicedSnapshot = createSnapshotBuffer();
+  private lastVoicedRawPcm: Float32Array | null = null;
+  private hasHeldVoiced = false;
+  private liveRmsDb = -120;
+  private liveVoiced = false;
   private capturedRawPcm: Float32Array | null = null;
   private capturedSampleRate = 48000;
   private baselineOptions: AnalyzerOptions = { ...DEFAULT_ANALYZER_OPTIONS };
@@ -178,8 +189,19 @@ class LabRuntime {
           micError: null,
           micDeviceLabel: null,
           autoCaptureArmed: false,
+          isRecordingClip: false,
+          playingRecordedClip: false,
         });
         this.controller?.stop();
+      };
+      this.controller.onRecordingStateChange = () => {
+        if (!this.controller) return;
+        useLabStore.setState({
+          isRecordingClip: this.controller.isRecordingClip,
+          hasRecordedClip: this.controller.hasRecordedClip,
+          playingRecordedClip: this.controller.playingRecordedClip,
+          recordingProgress: this.controller.recordingProgress,
+        });
       };
     }
     return this.controller;
@@ -189,10 +211,34 @@ class LabRuntime {
     return this.ensureController();
   }
 
+  getLiveRmsDb(): number {
+    return this.liveRmsDb;
+  }
+
+  isLiveVoiced(): boolean {
+    return this.liveVoiced;
+  }
+
+  isHoldingLastVoiced(): boolean {
+    const ctrl = this.ensureController();
+    return Boolean(
+      !this.frozen &&
+        ctrl &&
+        (ctrl.mode === "mic" || ctrl.mode === "stream") &&
+        !this.liveVoiced &&
+        this.hasHeldVoiced &&
+        !ctrl.isRecordingClip,
+    );
+  }
+
   getActiveTelemetry(): DSPFrameTelemetry {
     if (this.frozen) return this.snapshot;
     const ctrl = this.ensureController();
-    return ctrl ? ctrl.telemetry : this.snapshot;
+    if (!ctrl) return this.snapshot;
+    if ((ctrl.mode === "mic" || ctrl.mode === "stream") && !ctrl.telemetry.voiced && this.hasHeldVoiced && !ctrl.isRecordingClip) {
+      return this.lastVoicedSnapshot;
+    }
+    return ctrl.telemetry;
   }
 
   /** The original frozen telemetry captured before any parameter changes while paused. */
@@ -212,12 +258,18 @@ class LabRuntime {
   setFrozen(frozen: boolean): void {
     const ctrl = this.ensureController();
     if (frozen && !this.frozen && ctrl) {
-      const rawSlice = ctrl.getCurrentRawSlice();
+      const useHeld =
+        (ctrl.mode === "mic" || ctrl.mode === "stream") &&
+        !ctrl.telemetry.voiced &&
+        this.hasHeldVoiced &&
+        this.lastVoicedRawPcm !== null;
+      const rawSlice = useHeld && this.lastVoicedRawPcm ? this.lastVoicedRawPcm : ctrl.getCurrentRawSlice();
+      const srcTelemetry = useHeld ? this.lastVoicedSnapshot : ctrl.telemetry;
       this.capturedRawPcm = new Float32Array(rawSlice);
       this.capturedSampleRate = ctrl.analyzer.sampleRate;
       this.baselineOptions = { ...ctrl.analyzer.options };
-      copyTelemetryInto(ctrl.telemetry, this.snapshot);
-      copyTelemetryInto(ctrl.telemetry, this.baselineSnapshot);
+      copyTelemetryInto(srcTelemetry, this.snapshot);
+      copyTelemetryInto(srcTelemetry, this.baselineSnapshot);
     }
     this.frozen = frozen;
     const active = this.getActiveTelemetry();
@@ -228,12 +280,18 @@ class LabRuntime {
   captureNewSlice(): void {
     const ctrl = this.ensureController();
     if (!ctrl) return;
-    const rawSlice = ctrl.getCurrentRawSlice();
+    const useHeld =
+      (ctrl.mode === "mic" || ctrl.mode === "stream") &&
+      !ctrl.telemetry.voiced &&
+      this.hasHeldVoiced &&
+      this.lastVoicedRawPcm !== null;
+    const rawSlice = useHeld && this.lastVoicedRawPcm ? this.lastVoicedRawPcm : ctrl.getCurrentRawSlice();
+    const srcTelemetry = useHeld ? this.lastVoicedSnapshot : ctrl.telemetry;
     this.capturedRawPcm = new Float32Array(rawSlice);
     this.capturedSampleRate = ctrl.analyzer.sampleRate;
     this.baselineOptions = { ...ctrl.analyzer.options };
-    copyTelemetryInto(ctrl.telemetry, this.snapshot);
-    copyTelemetryInto(ctrl.telemetry, this.baselineSnapshot);
+    copyTelemetryInto(srcTelemetry, this.snapshot);
+    copyTelemetryInto(srcTelemetry, this.baselineSnapshot);
     this.frozen = true;
     for (const cb of this.listeners) cb(this.snapshot);
   }
@@ -257,6 +315,8 @@ class LabRuntime {
   clearTrail(): void {
     this.trail.head = 0;
     this.trail.count = 0;
+    this.hasHeldVoiced = false;
+    this.lastVoicedRawPcm = null;
   }
 
   /** Deliver every nth frame only: 1 is live; a larger step is the reduced-motion rate. */
@@ -273,6 +333,8 @@ class LabRuntime {
     const ctrl = this.ensureController();
     if (ctrl && !this.unsubController) {
       this.unsubController = ctrl.subscribe((t) => {
+        this.liveRmsDb = t.stability.rmsDb;
+        this.liveVoiced = t.voiced;
         const skip = ++this.frame % this.divider !== 0;
         if (this.frozen) {
           if (skip) return;
@@ -286,6 +348,9 @@ class LabRuntime {
           this.trail.score[idx] = t.activeTargetMatch.convergenceScore;
           this.trail.head = (idx + 1) % TRAIL_CAPACITY;
           if (this.trail.count < TRAIL_CAPACITY) this.trail.count++;
+          copyTelemetryInto(t, this.lastVoicedSnapshot);
+          this.lastVoicedRawPcm = new Float32Array(ctrl.getCurrentRawSlice());
+          this.hasHeldVoiced = true;
         }
         if (useLabStore.getState().autoCaptureArmed) {
           if (t.voiced && t.stability.pitchConfidence >= 0.62 && t.formants.confidence >= 0.25 && t.formants.f1 > 0) {
@@ -302,7 +367,14 @@ class LabRuntime {
           this.armedVoicedStreak = 0;
         }
         if (skip) return;
-        for (const cb of this.listeners) cb(t);
+        const outFrame =
+          (ctrl.mode === "mic" || ctrl.mode === "stream") &&
+          !t.voiced &&
+          this.hasHeldVoiced &&
+          !ctrl.isRecordingClip
+            ? this.lastVoicedSnapshot
+            : t;
+        for (const cb of this.listeners) cb(outFrame);
       });
     }
     listener(this.getActiveTelemetry());
@@ -326,6 +398,10 @@ export const useLabStore = create<LabState>((set, get) => ({
   micDeviceLabel: null,
   micGain: 2.5,
   autoCaptureArmed: false,
+  isRecordingClip: false,
+  hasRecordedClip: false,
+  playingRecordedClip: false,
+  recordingProgress: 0,
   frozen: false,
   traceOpen: false,
   traceStage: 1,
@@ -413,6 +489,22 @@ export const useLabStore = create<LabState>((set, get) => ({
     } else {
       set({ autoCaptureArmed });
     }
+  },
+
+  startRecording3s: () => {
+    const ctrl = labRuntime.getController();
+    if (!ctrl || ctrl.mode !== "mic") return;
+    labRuntime.setFrozen(false);
+    set({ frozen: false, bypassedStage: null, recomputeCount: 0, autoCaptureArmed: false });
+    ctrl.startRecordingClip(3);
+  },
+
+  setPlayRecordedClip: (play) => {
+    const ctrl = labRuntime.getController();
+    if (!ctrl) return;
+    labRuntime.setFrozen(false);
+    set({ frozen: false, bypassedStage: null });
+    ctrl.setPlayRecordedClip(play, true);
   },
 
   toggleFreeze: () => {
