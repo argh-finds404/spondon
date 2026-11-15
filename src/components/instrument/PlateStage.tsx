@@ -49,7 +49,7 @@ export function PlateStage({ className, ...plate }: Plate3DProps & { className?:
     <div ref={ref} role="img" aria-label={LABEL} className={`relative overflow-hidden ${className ?? ""}`}>
       {mode === "3d" && (
         <div className="absolute inset-0">
-          <Plate3D grains={typeof window !== "undefined" && window.innerWidth < 640 ? 7000 : 12000} {...plate} />
+          <Plate3D grains={typeof window !== "undefined" && window.innerWidth < 640 ? 9000 : 16000} {...plate} />
         </div>
       )}
       {mode === "2d" && <Trace kind="figure" bare label={LABEL} className="absolute inset-[9%]" />}

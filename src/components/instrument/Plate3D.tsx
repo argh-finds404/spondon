@@ -75,7 +75,7 @@ const GRAIN_VERTEX = /* glsl */ `
     vRest = aRest;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * mv;
-    gl_PointSize = clamp(mix(3.6, 2.6, aRest) * uScale / -mv.z, 1.2, 7.0);
+    gl_PointSize = clamp(mix(3.2, 2.15, aRest) * uScale / -mv.z, 1.5, 9.0);
   }
 `;
 
@@ -84,10 +84,12 @@ const GRAIN_FRAGMENT = /* glsl */ `
   varying float vRest;
   void main() {
     vec2 c = gl_PointCoord - 0.5;
-    if (dot(c, c) > 0.25) discard;
+    float r2 = dot(c, c);
+    if (r2 > 0.25) discard;
+    float edge = 1.0 - smoothstep(0.11, 0.25, r2);
     vec3 moving = vec3(1.0, 0.333, 0.0);
     vec3 settled = vec3(0.953, 0.941, 0.902);
-    gl_FragColor = vec4(mix(moving, settled, smoothstep(0.25, 0.8, vRest)), 1.0);
+    gl_FragColor = vec4(mix(moving, settled, smoothstep(0.25, 0.8, vRest)), edge * 0.95);
   }
 `;
 
@@ -140,6 +142,8 @@ function Plate({
         vertexShader: GRAIN_VERTEX,
         fragmentShader: GRAIN_FRAGMENT,
         uniforms: { uScale: { value: 3 } },
+        transparent: true,
+        depthWrite: false,
       }),
     [],
   );
@@ -169,8 +173,8 @@ function Plate({
 
   useFrame((state, rawDelta) => {
     const t = labRuntime.getActiveTelemetry();
-    grainMaterial.uniforms.uScale.value = state.size.height / 150;
-    nodalMaterial.uniforms.uOpacity.value = showNodalLines ? 0.3 : 0;
+    grainMaterial.uniforms.uScale.value = (state.size.height / 160) * state.viewport.dpr;
+    nodalMaterial.uniforms.uOpacity.value = showNodalLines ? 0.32 : 0;
 
     if (view) {
       const { azimuth, polar } = view.current;
@@ -265,16 +269,16 @@ function Plate({
     <group>
       {/* Stand and clamp: the brass of the plates in the archive. */}
       <mesh position={[0, -0.36, 0]}>
-        <cylinderGeometry args={[0.07, 0.11, 0.66, 32]} />
+        <cylinderGeometry args={[0.07, 0.11, 0.66, 48]} />
         <meshStandardMaterial color="#1b1e25" metalness={0.5} roughness={0.55} />
       </mesh>
       <mesh position={[0, 0, 0]}>
         <boxGeometry args={[2, 0.03, 2]} />
-        <meshStandardMaterial color="#1a1d24" metalness={0.7} roughness={0.42} />
+        <meshStandardMaterial color="#15181f" metalness={0.72} roughness={0.38} />
       </mesh>
       <mesh position={[0, 0.036, 0]}>
-        <cylinderGeometry args={[0.11, 0.11, 0.045, 40]} />
-        <meshStandardMaterial color="#b38c4e" metalness={0.9} roughness={0.3} />
+        <cylinderGeometry args={[0.11, 0.11, 0.045, 64]} />
+        <meshStandardMaterial color="#b38c4e" metalness={0.9} roughness={0.28} />
       </mesh>
       <mesh position={[0, TOP_Y + 0.0006, 0]} rotation={[-Math.PI / 2, 0, 0]} material={nodalMaterial}>
         <planeGeometry args={[2, 2]} />
@@ -291,14 +295,15 @@ export interface Plate3DProps {
   grains?: number;
 }
 
-export default function Plate3D({ interactive = false, showNodalLines = false, grains = 12000 }: Plate3DProps) {
+export default function Plate3D({ interactive = false, showNodalLines = false, grains = 16000 }: Plate3DProps) {
   const view = useRef<View>({ ...VIEW_HOME });
   const drag = useRef<{ x: number; y: number } | null>(null);
 
   const canvas = (
     <Canvas
       frameloop="demand"
-      dpr={[1, 2]}
+      dpr={[2, 3]}
+      resize={{ offsetSize: true, scroll: false }}
       camera={{ position: [0, 1.86, 2.05], fov: 36, near: 0.1, far: 20 }}
       gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
       aria-hidden

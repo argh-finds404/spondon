@@ -104,9 +104,11 @@ export function Trace({
 
     const resize = new ResizeObserver(() => {
       const rect = box.getBoundingClientRect();
-      s.w = Math.max(40, Math.floor(rect.width));
-      s.h = Math.max(24, Math.floor(rect.height));
-      dpr = Math.min(2, window.devicePixelRatio || 1);
+      const cw = box.clientWidth || Math.round(rect.width);
+      const ch = box.clientHeight || Math.round(rect.height);
+      s.w = Math.max(40, cw);
+      s.h = Math.max(24, ch);
+      dpr = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
       canvas.width = Math.round(s.w * dpr);
       canvas.height = Math.round(s.h * dpr);
       draw(labRuntime.getActiveTelemetry());
@@ -130,10 +132,18 @@ export function Trace({
     };
   }, []);
 
-  const track = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const toLocal = (e: React.MouseEvent<HTMLCanvasElement> | React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const scaleX = rect.width > 0 ? stateRef.current.w / rect.width : 1;
+    const scaleY = rect.height > 0 ? stateRef.current.h / rect.height : 1;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+    };
+  };
+
+  const track = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const { x, y } = toLocal(e);
     stateRef.current.px = x;
     stateRef.current.py = y;
     if (draggablePoles && draggingPoleRef.current) {
@@ -148,9 +158,7 @@ export function Trace({
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!draggablePoles) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const { x, y } = toLocal(e);
     const picked =
       pickFormantPole(stateRef.current, x, y, labRuntime.getActiveTelemetry()) ?? stateRef.current.selectedPoleFormant;
     draggingPoleRef.current = picked;
@@ -226,8 +234,8 @@ export function Trace({
         onClick={
           onPick
             ? (e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                const id = pickVowel(stateRef.current, e.clientX - rect.left, e.clientY - rect.top);
+                const { x, y } = toLocal(e);
+                const id = pickVowel(stateRef.current, x, y);
                 if (id) onPick(id);
               }
             : undefined
