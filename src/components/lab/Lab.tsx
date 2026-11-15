@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Prov, SourceSwitch, VowelKeys, type Provenance } from "@/components/instrument/controls";
+import { ExperimentsPanel, SignalChainHeader } from "@/components/instrument/ExperimentsPanel";
 import { PlateStage } from "@/components/instrument/PlateStage";
 import { Readout, type ReadoutField } from "@/components/instrument/Readout";
 import { Trace } from "@/components/instrument/Trace";
@@ -978,6 +979,8 @@ export function Lab() {
   const targetId = useLabStore((s) => s.targetId);
   const activeView = useLabStore((s) => s.activeView);
   const setActiveView = useLabStore((s) => s.setActiveView);
+  const labMode = useLabStore((s) => s.labMode);
+  const setLabMode = useLabStore((s) => s.setLabMode);
   const frozen = useLabStore((s) => s.frozen);
   const toggleFreeze = useLabStore((s) => s.toggleFreeze);
   const traceOpen = useLabStore((s) => s.traceOpen);
@@ -998,8 +1001,13 @@ export function Lab() {
 
   // /lab?vowel=ii opens holding that vowel (the homepage form and the atlas link here).
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("vowel");
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("vowel");
     if (id && VOWEL_TARGETS.some((v) => v.id === id)) useLabStore.getState().selectTarget(id, true);
+    const expParam = Number(params.get("exp"));
+    if (expParam >= 1 && expParam <= 5) {
+      useLabStore.getState().setActiveExperiment(expParam as 1 | 2 | 3 | 4 | 5);
+    }
   }, []);
 
   const plotHeight = solo ? "h-[min(62svh,620px)]" : "";
@@ -1008,7 +1016,39 @@ export function Lab() {
     <main id="content" className="wrap min-h-svh pt-(--nav-h) pb-6 text-[13px] leading-[1.4]">
       <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-2 py-3.5">
         <div className="min-w-0">
-          <h1 className="text-[24px] leading-tight font-semibold tracking-[-0.02em] text-ink">Laboratory</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-[24px] leading-tight font-semibold tracking-[-0.02em] text-ink">Laboratory</h1>
+            <div
+              role="group"
+              aria-label="Laboratory Mode Switcher"
+              className="inline-flex border border-line bg-surface p-0.5"
+            >
+              <button
+                type="button"
+                aria-pressed={labMode === "workspace"}
+                onClick={() => setLabMode("workspace")}
+                className={`px-3 py-1 text-[12px] font-semibold tracking-wide transition-colors ${
+                  labMode === "workspace"
+                    ? "bg-accent text-[#08090c]"
+                    : "text-muted hover:text-ink"
+                }`}
+              >
+                LAB WORKSPACE
+              </button>
+              <button
+                type="button"
+                aria-pressed={labMode === "experiments"}
+                onClick={() => setLabMode("experiments")}
+                className={`px-3 py-1 text-[12px] font-semibold tracking-wide transition-colors ${
+                  labMode === "experiments"
+                    ? "bg-accent text-[#08090c]"
+                    : "text-accent hover:text-ink"
+                }`}
+              >
+                ★ 5 DSP EXPERIMENTS (BREAK THE SIGNAL)
+              </button>
+            </div>
+          </div>
           <p className="mt-0.5 text-[14px] text-muted">
             Target{" "}
             <span lang={target.banglaSymbol ? "bn" : undefined} className="bn text-ink">
@@ -1039,6 +1079,8 @@ export function Lab() {
         </div>
       </header>
 
+      <SignalChainHeader />
+
       {micStatus === "requesting" && (
         <p role="status" className="mb-3 flex items-center gap-2.5 bg-raised px-3 py-2.5 text-[13px] text-ink">
           <span className="mark animate-pulse bg-accent!" aria-hidden />
@@ -1051,6 +1093,8 @@ export function Lab() {
         </p>
       )}
       {(sourceMode === "mic" || sourceMode === "stream") && <LiveInputMonitor />}
+
+      {labMode === "experiments" && <ExperimentsPanel />}
 
       {traceOpen && <TraceInspector />}
 
@@ -1122,7 +1166,7 @@ export function Lab() {
             </div>
           }
         >
-          <Trace kind="scope" label="The frame before and after the window: x[n] and x[n] times w[n]" className={`w-full ${plotHeight || "h-[200px] lg:h-[clamp(150px,20svh,240px)]"}`} />
+          <Trace kind="scope" compareBaseline label="The frame before and after the window: x[n] and x[n] times w[n]" className={`w-full ${plotHeight || "h-[200px] lg:h-[clamp(150px,20svh,240px)]"}`} />
         </Panel>
 
         <Panel
@@ -1142,7 +1186,7 @@ export function Lab() {
         </Panel>
 
         <Panel view="poles" title="Z-plane" kind="derived" className="col-span-12 lg:col-span-3">
-          <Trace kind="zplane" inspect compareBaseline label="Poles of the vocal-tract model inside the unit circle" className={`w-full ${plotHeight || "h-[260px] lg:h-[clamp(150px,20svh,240px)]"}`} />
+          <Trace kind="zplane" inspect compareBaseline draggablePoles label="Poles of the vocal-tract model inside the unit circle (drag F1 or F2)" className={`w-full ${plotHeight || "h-[260px] lg:h-[clamp(150px,20svh,240px)]"}`} />
         </Panel>
 
         {solo && (

@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { labRuntime, useLabStore } from "@/store/lab-store";
 import type { DSPFrameTelemetry } from "@/types/dsp";
-import { createDrawState, DRAW, pickVowel, type TraceKind } from "./draw";
+import { createDrawState, DRAW, pickFormantPole, pickVowel, pointerToPole, type TraceKind } from "./draw";
 
 interface TraceProps {
   kind: TraceKind;
@@ -14,8 +14,14 @@ interface TraceProps {
   bare?: boolean;
   /** Show a readout under the pointer. */
   inspect?: boolean;
-  /** Overlay the original frozen baseline telemetry when frozen parameters are modified. */
+  /** Overlay the original frozen or experiment baseline telemetry when parameters are modified. */
   compareBaseline?: boolean;
+  /** Z-plane only: allow dragging F1 and F2 poles directly inside the unit circle. */
+  draggablePoles?: boolean;
+  /** Z-plane only: which formant pole is selected for keyboard nudging (1 or 2). */
+  selectedPoleFormant?: 1 | 2;
+  /** Z-plane only: called when the user selects or grabs F1 or F2. */
+  onPoleSelect?: (formant: 1 | 2) => void;
   /** Vowel chart only: called with the target under a click. */
   onPick?: (vowelId: string) => void;
 }
@@ -24,25 +30,42 @@ interface TraceProps {
  * One live canvas of the instrument. It draws from the shared telemetry object on the
  * engine's own animation frame, only while it is on screen, and never touches React state.
  */
-export function Trace({ kind, label, className, bare = false, inspect = false, compareBaseline = false, onPick }: TraceProps) {
+export function Trace({
+  kind,
+  label,
+  className,
+  bare = false,
+  inspect = false,
+  compareBaseline = false,
+  draggablePoles = false,
+  selectedPoleFormant = 1,
+  onPoleSelect,
+  onPick,
+}: TraceProps) {
   const boxRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hoverRef = useRef<HTMLOutputElement>(null);
   const stateRef = useRef(createDrawState());
   const kindRef = useRef(kind);
   const compareRef = useRef(compareBaseline);
+  const draggingPoleRef = useRef<1 | 2 | null>(null);
   const targetId = useLabStore((s) => s.targetId);
   const frozen = useLabStore((s) => s.frozen);
   const recomputeCount = useLabStore((s) => s.recomputeCount);
+  const baselineVersion = useLabStore((s) => s.baselineVersion);
 
   useEffect(() => {
     kindRef.current = kind;
     compareRef.current = compareBaseline;
     stateRef.current.bare = bare;
     stateRef.current.targetId = targetId;
-    stateRef.current.baseline =
-      compareBaseline && frozen && recomputeCount > 0 ? labRuntime.getBaselineTelemetry() : null;
-  }, [kind, bare, targetId, compareBaseline, frozen, recomputeCount]);
+    stateRef.current.draggablePoles = draggablePoles;
+    stateRef.current.selectedPoleFormant = selectedPoleFormant;
+    const expBase = labRuntime.getExperimentBaseline()?.telemetry ?? null;
+    stateRef.current.baseline = compareBaseline
+      ? expBase ?? (frozen && recomputeCount > 0 ? labRuntime.getBaselineTelemetry() : null)
+      : null;
+  }, [kind, bare, targetId, compareBaseline, draggablePoles, selectedPoleFormant, frozen, recomputeCount, baselineVersion]);
 
   useEffect(() => {
     const box = boxRef.current;
@@ -62,6 +85,13 @@ export function Trace({ kind, label, className, bare = false, inspect = false, c
     void document.fonts?.load(s.fontGlyph, "আ");
 
     const draw = (t: DSPFrameTelemetry) => {
+      if (compareRef.current) {
+        const expBase = labRuntime.getExperimentBaseline()?.telemetry ?? null;
+        const st = useLabStore.getState();
+        s.baseline = expBase ?? (st.frozen && st.recomputeCount > 0 ? labRuntime.getBaselineTelemetry() : null);
+      } else {
+        s.baseline = null;
+      }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, s.w, s.h);
       DRAW[kindRef.current](ctx, s, t);
@@ -102,23 +132,97 @@ export function Trace({ kind, label, className, bare = false, inspect = false, c
 
   const track = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    stateRef.current.px = e.clientX - rect.left;
-    stateRef.current.py = e.clientY - rect.top;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    stateRef.current.px = x;
+    stateRef.current.py = y;
+    if (draggablePoles && draggingPoleRef.current) {
+      const { re, im } = pointerToPole(stateRef.current, x, y);
+      labRuntime.setPoleOverride(draggingPoleRef.current, re, im);
+    }
   };
   const untrack = () => {
     stateRef.current.px = -1;
     stateRef.current.py = -1;
   };
 
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!draggablePoles) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const picked =
+      pickFormantPole(stateRef.current, x, y, labRuntime.getActiveTelemetry()) ?? stateRef.current.selectedPoleFormant;
+    draggingPoleRef.current = picked;
+    stateRef.current.selectedPoleFormant = picked;
+    onPoleSelect?.(picked);
+    if (!labRuntime.getExperimentBaseline()) {
+      useLabStore.getState().captureExperimentBaseline("Natural Pole Baseline");
+    }
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore in synthetic test environments without pointer capture
+    }
+    const { re, im } = pointerToPole(stateRef.current, x, y);
+    labRuntime.setPoleOverride(picked, re, im);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!draggablePoles || !draggingPoleRef.current) return;
+    draggingPoleRef.current = null;
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    if (!draggablePoles) return;
+    if (e.key === "1" || e.key === "2") {
+      const f = e.key === "1" ? 1 : 2;
+      stateRef.current.selectedPoleFormant = f;
+      onPoleSelect?.(f);
+      return;
+    }
+    const f = stateRef.current.selectedPoleFormant;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!labRuntime.getExperimentBaseline()) {
+        useLabStore.getState().captureExperimentBaseline("Natural Pole Baseline");
+      }
+      if (e.key === "ArrowLeft") labRuntime.nudgePoleOverride(f, 0, -35);
+      else if (e.key === "ArrowRight") labRuntime.nudgePoleOverride(f, 0, 35);
+      else if (e.key === "ArrowUp") labRuntime.nudgePoleOverride(f, 0.012, 0);
+      else if (e.key === "ArrowDown") labRuntime.nudgePoleOverride(f, -0.015, 0);
+    }
+  };
+
   return (
     <div ref={boxRef} className={`relative ${className ?? ""}`}>
       <canvas
         ref={canvasRef}
-        role="img"
+        role={draggablePoles ? "application" : "img"}
+        tabIndex={draggablePoles ? 0 : undefined}
         aria-label={label}
-        className={`absolute inset-0 h-full w-full ${onPick ? "cursor-pointer" : inspect ? "cursor-crosshair" : ""}`}
-        onPointerMove={inspect ? track : undefined}
-        onPointerLeave={inspect ? untrack : undefined}
+        className={`absolute inset-0 h-full w-full ${
+          draggablePoles
+            ? "cursor-grab touch-none focus:ring-1 focus:ring-accent focus:outline-none active:cursor-grabbing"
+            : onPick
+              ? "cursor-pointer"
+              : inspect
+                ? "cursor-crosshair"
+                : ""
+        }`}
+        onPointerDown={draggablePoles ? handlePointerDown : undefined}
+        onPointerMove={inspect || draggablePoles ? track : undefined}
+        onPointerUp={draggablePoles ? handlePointerUp : undefined}
+        onPointerCancel={draggablePoles ? handlePointerUp : undefined}
+        onPointerLeave={inspect || draggablePoles ? untrack : undefined}
+        onKeyDown={draggablePoles ? handleKeyDown : undefined}
         onClick={
           onPick
             ? (e) => {

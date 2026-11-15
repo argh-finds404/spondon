@@ -73,6 +73,10 @@ export interface DrawState {
   trail: TrailView | null;
   /** Optional frozen baseline telemetry for side-by-side BEFORE vs AFTER overlay. */
   baseline: DSPFrameTelemetry | null;
+  /** When true, upper-half-plane F1 and F2 poles render with draggable handles. */
+  draggablePoles: boolean;
+  /** Currently focused pole for keyboard nudging (1 = F1, 2 = F2). */
+  selectedPoleFormant: 1 | 2;
   /** Filled by the draw function while the pointer is over the plot. */
   hover: string;
 }
@@ -92,6 +96,8 @@ export function createDrawState(): DrawState {
     modes: { m: 2.8, n: 5.6 },
     trail: null,
     baseline: null,
+    draggablePoles: false,
+    selectedPoleFormant: 1,
     hover: "",
   };
 }
@@ -317,6 +323,13 @@ const drawScope: DrawFn = (ctx, s, t) => {
   ctx.strokeStyle = INK.inkFaint;
   ctx.lineWidth = 1;
   wave(ctx, raw, 0, n, padL, w, mid, gain);
+  if (s.baseline && s.baseline !== t) {
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = INK.accentSoft;
+    ctx.lineWidth = 1.25;
+    wave(ctx, s.baseline.timeDomainWindowed, 0, n, padL, w, mid, gain);
+    ctx.setLineDash([]);
+  }
   ctx.strokeStyle = INK.ink;
   ctx.lineWidth = 1.5;
   ctx.lineJoin = "round";
@@ -490,16 +503,30 @@ function spectrum(ctx: Ctx, s: DrawState, t: DSPFrameTelemetry, fft: boolean, lp
 
   if (s.baseline && s.baseline !== t) {
     ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = INK.mutedSoft;
-    ctx.lineWidth = 1.25;
-    ctx.beginPath();
-    const baseArr = lpc ? s.baseline.lpcEnvelopeDb : s.baseline.fftMagnitudeDb;
-    for (let b = 0; b < bins; b++) {
-      const y = padT + (MAX_DB - baseArr[b]) * yScale;
-      if (b === 0) ctx.moveTo(padL, y);
-      else ctx.lineTo(padL + (b / (bins - 1)) * w, y);
+    if (fft) {
+      ctx.strokeStyle = INK.mutedSoft;
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      const baseFft = s.baseline.fftMagnitudeDb;
+      for (let b = 0; b < bins; b++) {
+        const y = padT + (MAX_DB - baseFft[b]) * yScale;
+        if (b === 0) ctx.moveTo(padL, y);
+        else ctx.lineTo(padL + (b / (bins - 1)) * w, y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
+    if (lpc) {
+      ctx.strokeStyle = "rgba(0, 229, 255, 0.38)";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      const baseLpc = s.baseline.lpcEnvelopeDb;
+      for (let b = 0; b < bins; b++) {
+        const y = padT + (MAX_DB - baseLpc[b]) * yScale;
+        if (b === 0) ctx.moveTo(padL, y);
+        else ctx.lineTo(padL + (b / (bins - 1)) * w, y);
+      }
+      ctx.stroke();
+    }
     ctx.setLineDash([]);
   }
 
@@ -575,9 +602,9 @@ function spectrum(ctx: Ctx, s: DrawState, t: DSPFrameTelemetry, fft: boolean, lp
   }
 }
 
-const HARMONIC_LABELS = ["", "▲ F0", "▲ 2·F0", "▲ 3·F0"] as const;
+const HARMONIC_LABELS = ["", "▲ F0", "▲ 2·F0", "▲ 3·F0", "▲ 4·F0"] as const;
 
-/** Stage 4 output: 1024-pt FFT magnitude spectrum with harmonic peak markers (F0, 2·F0, 3·F0). */
+/** Stage 4 output: 1024-pt FFT magnitude spectrum with harmonic peak markers (F0, 2·F0, 3·F0, 4·F0). */
 const drawFftHarmonics: DrawFn = (ctx, s, t) => {
   spectrum(ctx, s, t, true, false, false);
   const f0 = t.stability.f0Hz;
@@ -601,7 +628,7 @@ const drawFftHarmonics: DrawFn = (ctx, s, t) => {
   ctx.strokeStyle = INK.accentSoft;
   ctx.lineWidth = 1;
 
-  for (let k = 1; k <= 3; k++) {
+  for (let k = 1; k <= 4; k++) {
     const targetHz = k * f0;
     if (targetHz >= nyquist) break;
     const centerBin = Math.round((targetHz / nyquist) * (bins - 1));
@@ -787,6 +814,7 @@ const drawZPlane: DrawFn = (ctx, s, t) => {
     }
     const isFormant = p.formantIndex > 0;
     const upper = p.im >= 0;
+    const isDraggablePole = s.draggablePoles && upper && (p.formantIndex === 1 || p.formantIndex === 2);
     if (isFormant && upper) {
       ctx.strokeStyle = INK.accentSoft;
       ctx.lineWidth = 1;
@@ -795,21 +823,38 @@ const drawZPlane: DrawFn = (ctx, s, t) => {
       ctx.lineTo(px, py);
       ctx.stroke();
     }
-    const z = isFormant ? 5 : 3.5;
-    ctx.strokeStyle = isFormant ? (upper ? INK.accent : INK.accentSoft) : INK.muted;
-    ctx.lineWidth = isFormant ? 2 : 1.25;
-    ctx.beginPath();
-    ctx.moveTo(px - z, py - z);
-    ctx.lineTo(px + z, py + z);
-    ctx.moveTo(px - z, py + z);
-    ctx.lineTo(px + z, py - z);
-    ctx.stroke();
-    if (isFormant && upper) {
+    if (isDraggablePole) {
+      const isSelected = p.formantIndex === s.selectedPoleFormant;
+      ctx.strokeStyle = isSelected ? INK.lpc : INK.accentSoft;
+      ctx.lineWidth = isSelected ? 1.75 : 1.25;
+      ctx.beginPath();
+      ctx.arc(px, py, isSelected ? 11 : 9, 0, Math.PI * 2);
+      ctx.stroke();
       ctx.fillStyle = INK.accent;
+      ctx.beginPath();
+      ctx.arc(px, py, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const z = isFormant ? 5 : 3.5;
+      ctx.strokeStyle = isFormant ? (upper ? INK.accent : INK.accentSoft) : INK.muted;
+      ctx.lineWidth = isFormant ? 2 : 1.25;
+      ctx.beginPath();
+      ctx.moveTo(px - z, py - z);
+      ctx.lineTo(px + z, py + z);
+      ctx.moveTo(px - z, py + z);
+      ctx.lineTo(px + z, py - z);
+      ctx.stroke();
+    }
+    if (isFormant && upper) {
+      ctx.fillStyle = isDraggablePole && p.formantIndex === s.selectedPoleFormant ? INK.lpc : INK.accent;
       ctx.font = s.fontStrong;
       ctx.textAlign = "left";
       ctx.textBaseline = "bottom";
-      ctx.fillText(F_LABELS[p.formantIndex], px + 8, py - 4);
+      ctx.fillText(
+        isDraggablePole ? `${F_LABELS[p.formantIndex]} ✥` : F_LABELS[p.formantIndex],
+        px + (isDraggablePole ? 12 : 8),
+        py - 4,
+      );
     }
   }
 
@@ -820,6 +865,37 @@ const drawZPlane: DrawFn = (ctx, s, t) => {
     s.hover = "";
   }
 };
+
+/** Hit-test the upper-half-plane F1 or F2 pole on the Z-plane canvas. */
+export function pickFormantPole(s: DrawState, x: number, y: number, t: DSPFrameTelemetry): 1 | 2 | null {
+  const cx = s.w / 2;
+  const cy = s.h / 2;
+  const r = Math.min(s.w, s.h) * (s.bare ? 0.44 : 0.38);
+  let best: 1 | 2 | null = null;
+  let bestD = 32;
+  for (const p of t.zPlanePoles) {
+    if (p.im < 0 || (p.formantIndex !== 1 && p.formantIndex !== 2)) continue;
+    const px = cx + p.re * r;
+    const py = cy - p.im * r;
+    const d = Math.hypot(x - px, y - py);
+    if (d < bestD) {
+      bestD = d;
+      best = p.formantIndex as 1 | 2;
+    }
+  }
+  return best;
+}
+
+/** Convert pointer (x, y) in CSS pixels on the Z-plane canvas into unit-circle (re, im). */
+export function pointerToPole(s: DrawState, x: number, y: number): { re: number; im: number } {
+  const cx = s.w / 2;
+  const cy = s.h / 2;
+  const r = Math.max(1, Math.min(s.w, s.h) * (s.bare ? 0.44 : 0.38));
+  return {
+    re: (x - cx) / r,
+    im: Math.max(0.03, (cy - y) / r),
+  };
+}
 
 /* ── Vowel space ──────────────────────────────────────────────────── */
 
