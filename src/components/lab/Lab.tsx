@@ -1,17 +1,16 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Prov, SourceSwitch, VowelKeys, type Provenance } from "@/components/instrument/controls";
-import { ExperimentsPanel, SignalChainHeader } from "@/components/instrument/ExperimentsPanel";
 import { PlateStage } from "@/components/instrument/PlateStage";
 import { Readout, type ReadoutField } from "@/components/instrument/Readout";
 import { Trace } from "@/components/instrument/Trace";
-import type { TraceKind } from "@/components/instrument/draw";
 import { SIGNAL_HZ_RANGE, SIGNAL_INFO, type SignalKind, type WaveKind } from "@/lib/dsp/signals";
 import { findVowel, nearestVowel, VOWEL_TARGETS, vowelGlyph } from "@/lib/dsp/vowel-targets";
 import { WINDOW_INFO, WINDOW_TYPES } from "@/lib/dsp/windows";
-import { labRuntime, useLabStore, type LabView, type TraceStageId } from "@/store/lab-store";
-import type { DSPFrameTelemetry } from "@/types/dsp";
+import { labRuntime, useLabStore, type LabView } from "@/store/lab-store";
 
 const VIEWS: { view: LabView; label: string }[] = [
   { view: "all", label: "All" },
@@ -279,547 +278,6 @@ function AnalysisControls() {
   );
 }
 
-interface StageSpec {
-  id: TraceStageId;
-  pill: string;
-  title: string;
-  kind: Provenance;
-  beforeTitle: string;
-  beforeSub: string;
-  beforeTrace: TraceKind;
-  afterTitle: string;
-  afterSub: string;
-  afterTrace: TraceKind | "plate";
-  bypassLabel?: string;
-  why: string;
-}
-
-const TRACE_STAGES: readonly StageSpec[] = [
-  {
-    id: 1,
-    pill: "1. Samples",
-    title: "From sound pressure to 12,000 numbers a second",
-    kind: "measured",
-    beforeTitle: "Before: the incoming wave",
-    beforeSub: "The newest samples from the browser's audio graph, at the device rate (usually 48 kHz)",
-    beforeTrace: "voice",
-    afterTitle: "After: 512 samples at 12 kHz",
-    afterSub: "A 42.7 ms frame, one sample every 83.3 µs, Nyquist frequency 6 kHz",
-    afterTrace: "samples",
-    why: "The first three formants all lie below about 4 kHz. Low-pass filtering and keeping one sample in four puts every bin of the spectrum and every pole of the model inside 0 to 6 kHz, where the vowel information is, and cuts the arithmetic to a quarter.",
-  },
-  {
-    id: 2,
-    pill: "2. Pre-emphasis",
-    title: "Removing the offset and lifting the highs",
-    kind: "measured",
-    beforeTitle: "Before: the decimated frame",
-    beforeSub: "Voiced speech loses about 6 dB per octave, so the upper formants are much weaker than F1",
-    beforeTrace: "rawDecimated",
-    afterTitle: "After: y[n] = x[n] − α·x[n−1]",
-    afterSub: "A one-tap high-pass filter that adds about 6 dB per octave and flattens the slope",
-    afterTrace: "preEmphasized",
-    bypassLabel: "Bypass this stage (α = 0)",
-    why: "Without pre-emphasis the model spends its poles describing the overall downward slope of the voice instead of its resonances. Bypass it and watch F2 and F3 broaden or move.",
-  },
-  {
-    id: 3,
-    pill: "3. Window",
-    title: "Tapering the frame: xw[n] = y[n] · w[n]",
-    kind: "measured",
-    beforeTitle: "Before: the frame cut out bluntly",
-    beforeSub: "The signal stops abruptly at n = 0 and n = 511",
-    beforeTrace: "preEmphasized",
-    afterTitle: "After: the windowed frame",
-    afterSub: "Both ends are brought smoothly to zero before the FFT and the autocorrelation",
-    afterTrace: "windowed",
-    bypassLabel: "Bypass this stage (rectangular)",
-    why: "An abrupt cut acts like a sharp edge in time, and its energy spreads across the whole spectrum. A rectangular window's highest sidelobe is only 13 dB down; Hamming brings it to about 43 dB down, at the cost of a wider main lobe.",
-  },
-  {
-    id: 4,
-    pill: "4. FFT",
-    title: "A 1,024-point Fourier transform",
-    kind: "measured",
-    beforeTitle: "Before: the windowed frame",
-    beforeSub: "512 tapered samples, padded with 512 zeros to N = 1,024",
-    beforeTrace: "windowed",
-    afterTitle: "After: the magnitude spectrum, in dB",
-    afterSub: "512 bins from 0 to 6 kHz, 11.7 Hz apart, with the harmonics of the voice marked",
-    afterTrace: "fftHarmonics",
-    why: "The spectrum shows a comb of harmonics, one every F0 hertz. The formants are the hills the comb rides on, not its tallest teeth: picking the highest bin finds a harmonic, not a resonance. That is why the next stages fit a model.",
-  },
-  {
-    id: 5,
-    pill: "5. Pitch",
-    title: "Finding the pitch: the McLeod method",
-    kind: "measured",
-    beforeTitle: "Before: the repeating wave",
-    beforeSub: "One glottal pulse every T0 = 1 / F0 seconds",
-    beforeTrace: "pitch",
-    afterTitle: "After: the self-similarity curve n(τ)",
-    afterSub: "The first peak within 90% of the highest one gives the period; F0 = fs / τ",
-    afterTrace: "nsdf",
-    why: "n(τ) compares the wave with itself shifted by τ samples and is normalised to lie between −1 and 1, whatever the loudness. Taking the first strong peak, not the highest, avoids reading an octave too low. A parabola through the peak refines the period to a fraction of a sample.",
-  },
-  {
-    id: 6,
-    pill: "6. Envelope",
-    title: "Linear prediction: the all-pole envelope",
-    kind: "derived",
-    beforeTitle: "Before: the jagged harmonic spectrum",
-    beforeSub: "The individual harmonics hide the shape of the vocal tract",
-    beforeTrace: "fft",
-    afterTitle: "After: G / |A(e^jω)| over the spectrum",
-    afterSub: "Levinson–Durbin solves the Toeplitz system R·a = r in O(p²) steps",
-    afterTrace: "spectrum",
-    bypassLabel: "Under-fit this stage (order 4)",
-    why: "Each sample is predicted from the twelve before it. The weights that leave the smallest error describe an all-pole filter, a model of the tract without the source. With order 4 the model can draw only two peaks; with 24 it starts to follow individual harmonics.",
-  },
-  {
-    id: 7,
-    pill: "7. Poles",
-    title: "The poles: roots of A(z), found by Durand–Kerner iteration",
-    kind: "derived",
-    beforeTitle: "Before: the coefficients of A(z) = 1 − Σ a_k z^−k",
-    beforeSub: "LPC coefficients a[1..p] (cyan) and the normalised autocorrelation R[k]/R[0] (faint)",
-    beforeTrace: "lpcCoeffs",
-    afterTitle: "After: the roots z_k = r_k e^(±jθ_k)",
-    afterSub: "The angle gives the frequency, F = θ·fs / 2π; the radius gives the bandwidth, B = −(fs/π) ln r",
-    afterTrace: "zplane",
-    why: "Two formants close together can merge into one peak of the envelope, but they stay two separate poles. Solving A(z) = 0 gives every resonance exactly. The first upper-half-plane poles in the ranges a vocal tract can produce, each narrower than 500 Hz, are taken as F1, F2 and F3.",
-  },
-  {
-    id: 8,
-    pill: "8. Vowel and figure",
-    title: "The vowel chart and the sand figure",
-    kind: "mapped",
-    beforeTitle: "Before: the formants on the vowel chart",
-    beforeSub: "Distance to the eight reference vowels, measured on the Bark scale of hearing",
-    beforeTrace: "vowel",
-    afterTitle: "After: the Chladni figure C(x, y) = 0",
-    afterSub: "A drawing rule: F1 chooses the mode number m, F2 chooses n, on a square plate",
-    afterTrace: "plate",
-    why: "F1 falls as the tongue rises and F2 rises as it moves forward, so the two formants place a vowel on a map of the mouth. The figure is not a measurement: it gives each vowel a shape you can recognise, the way Chladni's sand made a plate's vibration visible.",
-  },
-] as const;
-
-function fmtArr(arr: ArrayLike<number>, count: number, digits = 4): string {
-  const n = Math.min(count, arr.length);
-  const parts: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const v = arr[i];
-    parts.push(`${v >= 0 ? "+" : ""}${v.toFixed(digits)}`);
-  }
-  return `[ ${parts.join(", ")}${arr.length > n ? ", …" : ""} ]`;
-}
-
-function TraceInspector() {
-  const traceStage = useLabStore((s) => s.traceStage);
-  const setTraceStage = useLabStore((s) => s.setTraceStage);
-  const stepTraceStage = useLabStore((s) => s.stepTraceStage);
-  const setTraceOpen = useLabStore((s) => s.setTraceOpen);
-  const captureAndTrace = useLabStore((s) => s.captureAndTrace);
-  const toggleBypassStage = useLabStore((s) => s.toggleBypassStage);
-  const bypassedStage = useLabStore((s) => s.bypassedStage);
-  const frozen = useLabStore((s) => s.frozen);
-  const toggleFreeze = useLabStore((s) => s.toggleFreeze);
-  const recomputeCount = useLabStore((s) => s.recomputeCount);
-  const options = useLabStore((s) => s.analyzerOptions);
-  const updateOptions = useLabStore((s) => s.updateAnalyzerOptions);
-  const selectTarget = useLabStore((s) => s.selectTarget);
-  const sourceMode = useLabStore((s) => s.sourceMode);
-  const nodal = useLabStore((s) => s.showNodalLines);
-
-  const [showMath, setShowMath] = useState(true);
-  const [, setTick] = useState(0);
-
-  // Subscribe to telemetry updates so the live mathematical tape stays in sync when live or re-computed.
-  useEffect(() => {
-    let last = 0;
-    return labRuntime.subscribe(() => {
-      const now = performance.now();
-      if (useLabStore.getState().frozen || now - last > 140) {
-        last = now;
-        setTick((c) => (c + 1) % 100000);
-      }
-    });
-  }, [recomputeCount, frozen, traceStage]);
-
-  const spec = TRACE_STAGES[traceStage - 1];
-  const active: DSPFrameTelemetry = labRuntime.getActiveTelemetry();
-  const base: DSPFrameTelemetry = labRuntime.getBaselineTelemetry();
-  const sb = active.stageBuffers;
-  const winInfo = WINDOW_INFO[options.windowType];
-  const canBypass = traceStage === 2 || traceStage === 3 || traceStage === 6;
-  const isBypassed = bypassedStage === traceStage;
-  const modifiedWhileFrozen = frozen && recomputeCount > 0;
-
-  const restoreBaseline = () => {
-    const baseOpts = labRuntime.getBaselineOptions();
-    updateOptions(baseOpts);
-    useLabStore.setState({ bypassedStage: null, recomputeCount: 0 });
-  };
-
-  return (
-    <section
-      aria-label="Trace and Re-Run Signal Inspector"
-      className="ui-panel mb-4 border border-accent/50 bg-surface"
-    >
-      {/* Top Pipeline Stepper Header */}
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-3 py-2.5">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <span className="mark bg-accent!" aria-hidden />
-          <h2 className="text-[13px] font-semibold text-ink">
-            Trace &amp; Re-Run Signal
-          </h2>
-          <span className="bg-raised px-2 py-0.5 text-[12px] font-medium text-muted rounded-(--radius-sm)">
-            {frozen
-              ? modifiedWhileFrozen
-                ? `Frozen slice · Re-computed (${recomputeCount}×) vs Baseline`
-                : "Frozen slice · 512 samples locked"
-              : "Live stream · Click Freeze or Capture to lock a slice"}
-          </span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => stepTraceStage(-1)}
-            className="btn min-h-8! px-2.5! py-1! text-[12px]"
-          >
-            ◀ PREV
-          </button>
-          <button
-            type="button"
-            onClick={() => stepTraceStage(1)}
-            className="btn min-h-8! px-2.5! py-1! text-[12px]"
-          >
-            STEP ▶
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (!frozen) captureAndTrace();
-              else {
-                toggleFreeze();
-                setTimeout(() => useLabStore.getState().captureAndTrace(), 40);
-              }
-            }}
-            className="ui-tab min-h-8 border border-line px-2.5 text-[12px] font-medium rounded-(--radius-sm)"
-            title="Capture the latest 512-sample voice slice as the new baseline"
-          >
-            Capture new slice
-          </button>
-          {modifiedWhileFrozen && (
-            <button
-              type="button"
-              onClick={restoreBaseline}
-              className="ui-tab min-h-8 border border-line px-2.5 text-[12px] font-medium text-accent rounded-(--radius-sm)"
-            >
-              Restore baseline
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setTraceOpen(false)}
-            className="ui-tab min-h-8 px-2 text-[12px] font-medium text-muted hover:text-ink"
-          >
-            Close ✕
-          </button>
-        </div>
-      </header>
-
-      {/* 8-Stage Pipeline Bar */}
-      <div
-        role="tablist"
-        aria-label="8-Stage DSP Pipeline"
-        className="no-scrollbar flex items-center gap-1 overflow-x-auto border-b border-line bg-raised/50 px-3 py-2 rounded-(--radius-sm)"
-      >
-        {TRACE_STAGES.map((st, idx) => {
-          const current = st.id === traceStage;
-          return (
-            <div key={st.id} className="flex flex-none items-center gap-1">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={current}
-                onClick={() => setTraceStage(st.id)}
-                className={`px-2.5 py-1.5 text-[12px] font-medium whitespace-nowrap transition-colors ${
-                  current
-                    ? "bg-accent text-accent-ink font-semibold"
-                    : "bg-raised text-muted hover:text-ink"
-                }`}
-              >
-                [ {st.pill} ]
-              </button>
-              {idx < TRACE_STAGES.length - 1 && (
-                <span className="px-0.5 text-[12px] text-muted select-none" aria-hidden>
-                  ➔
-                </span>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Stage Subheader & Interactive Re-Computation Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-3 py-2.5">
-        <div>
-          <h3 className="text-[14px] font-semibold text-ink">
-            <Prov kind={spec.kind}>{spec.title}</Prov>
-          </h3>
-        </div>
-
-        {/* Stage-specific live re-computation controls */}
-        <div className="flex flex-wrap items-center gap-3">
-          {traceStage === 2 && (
-            <button
-              type="button"
-              aria-pressed={options.preEmphasis > 0}
-              onClick={() => updateOptions({ preEmphasis: options.preEmphasis > 0 ? 0 : 0.97 })}
-              className="btn min-h-8! px-3! py-1! text-[12px]"
-            >
-              [ Toggle Pre-Emphasis α=0.97 : {options.preEmphasis > 0 ? "ON" : "OFF (α=0)"} ]
-            </button>
-          )}
-
-          {(traceStage === 3 || traceStage === 4) && (
-            <div role="radiogroup" aria-label="Window function" className="flex flex-wrap items-center gap-1.5">
-              {WINDOW_TYPES.map((w) => (
-                <button
-                  key={w}
-                  type="button"
-                  role="radio"
-                  aria-checked={options.windowType === w}
-                  onClick={() => updateOptions({ windowType: w })}
-                  className={`px-2.5 py-1 text-[12px] font-medium ${
-                    options.windowType === w ? "bg-accent text-accent-ink font-semibold" : "bg-raised text-muted hover:text-ink"
-                  }`}
-                >
-                  {WINDOW_INFO[w].label}
-                </button>
-              ))}
-              <span className="ui-fig ml-1 text-[12px] text-muted">
-                Sidelobe {winInfo.peakSidelobeDb.toFixed(1)} dB · Main lobe {winInfo.mainLobeBins} bins
-              </span>
-            </div>
-          )}
-
-          {(traceStage === 6 || traceStage === 7) && (
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="flex items-center gap-2 text-[12px]">
-                <span className="text-muted">LPC Order p:</span>
-                <input
-                  type="range"
-                  min={4}
-                  max={24}
-                  step={2}
-                  value={options.lpcOrder}
-                  onChange={(e) => updateOptions({ lpcOrder: Number(e.target.value) })}
-                  className="ui-slider w-28"
-                />
-                <span className="ui-fig min-w-[6ch] font-semibold text-ink">{options.lpcOrder} poles</span>
-              </label>
-            </div>
-          )}
-
-          {canBypass && (
-            <button
-              type="button"
-              aria-pressed={isBypassed}
-              onClick={() => toggleBypassStage(traceStage)}
-              className={`px-2.5 py-1 text-[12px] font-medium transition-colors ${
-                isBypassed
-                  ? "bg-accent text-accent-ink font-semibold"
-                  : "border border-line bg-raised text-ink hover:border-accent"
-              }`}
-            >
-              [ {isBypassed ? "✓ STAGE BYPASSED — CLICK TO RESTORE" : spec.bypassLabel ?? "✕ BYPASS THIS STAGE"} ]
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* BEFORE | AFTER Visual Comparison Grid */}
-      <div className="grid grid-cols-12 border-b border-line">
-        {/* LEFT COLUMN: BEFORE (Stage Input) */}
-        <div className="col-span-12 flex flex-col border-b border-line md:col-span-6 md:border-r md:border-b-0">
-          <div className="flex items-baseline justify-between gap-2 border-b border-line bg-raised/30 px-3 py-1.5 rounded-(--radius-sm)">
-            <span className="text-[12px] font-semibold text-ink">{spec.beforeTitle}</span>
-            <span className="text-[12px] text-muted">{spec.beforeSub}</span>
-          </div>
-          <Trace
-            kind={spec.beforeTrace}
-            inspect
-            compareBaseline={traceStage === 8}
-            onPick={traceStage === 8 ? (id) => selectTarget(id, sourceMode !== "mic" && sourceMode !== "stream") : undefined}
-            label={spec.beforeTitle}
-            className="h-[220px] w-full"
-          />
-        </div>
-
-        {/* RIGHT COLUMN: AFTER (Stage Output) */}
-        <div className="col-span-12 flex flex-col md:col-span-6">
-          <div className="flex items-baseline justify-between gap-2 border-b border-line bg-raised/30 px-3 py-1.5 rounded-(--radius-sm)">
-            <span className="text-[12px] font-semibold text-ink">{spec.afterTitle}</span>
-            <span className="text-[12px] text-muted">{spec.afterSub}</span>
-          </div>
-          {spec.afterTrace === "plate" ? (
-            <PlateStage interactive showNodalLines={nodal} className="h-[220px] w-full" />
-          ) : (
-            <Trace
-              kind={spec.afterTrace}
-              inspect
-              compareBaseline
-              label={spec.afterTitle}
-              className="h-[220px] w-full"
-            />
-          )}
-        </div>
-      </div>
-
-      {/* Live Stage Telemetry Strip (Baseline vs Current when frozen & modified) */}
-      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5 border-b border-line bg-raised/40 px-3 py-2 text-[12px] rounded-(--radius-sm)">
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
-          <span>
-            <span className="text-muted">Params:</span>{" "}
-            <span className="ui-fig text-ink">
-              α = {options.preEmphasis.toFixed(2)} · {WINDOW_INFO[options.windowType].label} · LPC({options.lpcOrder})
-            </span>
-          </span>
-          <span>
-            <span className="text-muted">F0:</span>{" "}
-            <span className="ui-fig text-ink">
-              {active.voiced ? `${Math.round(active.stability.f0Hz)} Hz (τ = ${sb.peakLagTau.toFixed(1)})` : "Unvoiced"}
-            </span>
-          </span>
-          <span>
-            <span className="text-muted">Formants, after:</span>{" "}
-            <span className="ui-fig text-ink">
-              F1 {Math.round(active.formants.f1)} Hz · F2 {Math.round(active.formants.f2)} Hz · F3 {Math.round(active.formants.f3)} Hz
-            </span>
-          </span>
-          {modifiedWhileFrozen && (
-            <span>
-              <span className="text-muted">Baseline, before:</span>{" "}
-              <span className="ui-fig text-muted">
-                F1 {Math.round(base.formants.f1)} Hz · F2 {Math.round(base.formants.f2)} Hz · F3 {Math.round(base.formants.f3)} Hz
-              </span>
-              <span className="ui-fig ml-2 text-accent">
-                (ΔF1 {Math.round(active.formants.f1 - base.formants.f1) >= 0 ? "+" : ""}
-                {Math.round(active.formants.f1 - base.formants.f1)} Hz, ΔF2{" "}
-                {Math.round(active.formants.f2 - base.formants.f2) >= 0 ? "+" : ""}
-                {Math.round(active.formants.f2 - base.formants.f2)} Hz)
-              </span>
-            </span>
-          )}
-        </div>
-        <button
-          type="button"
-          aria-expanded={showMath}
-          onClick={() => setShowMath(!showMath)}
-          className="ui-tab min-h-7 text-[12px] font-semibold text-accent"
-        >
-          [ {showMath ? "HIDE MATHEMATICS ▲" : "SHOW MATHEMATICS ▼"} ]
-        </button>
-      </div>
-
-      {/* Bottom Strip: WHY THIS STAGE MATTERS + Expandable SHOW MATHEMATICS Tape */}
-      <div className="px-3 py-2.5">
-        <p className="text-[13px] leading-relaxed text-ink">
-          <strong className="font-semibold text-accent">Why this stage matters: </strong>
-          {spec.why}
-        </p>
-
-        {showMath && (
-          <div className="mt-3 grid grid-cols-12 gap-3 border-t border-line pt-3 text-[12px]">
-            <div className="col-span-12 space-y-1.5 lg:col-span-7">
-              <div className="text-[12px] font-semibold text-muted">
-                Live Captured Frame Numerical Tape (N = 512, fs = {active.analysisRate} Hz)
-              </div>
-              <div className="ui-fig overflow-x-auto bg-raised p-2.5 leading-relaxed text-ink rounded-(--radius-sm)">
-                <div>
-                  <span className="text-muted">rawDecimated x[0..5]   = </span>
-                  {fmtArr(sb.rawDecimated, 6, 4)}
-                </div>
-                <div>
-                  <span className="text-muted">preEmphasized y[0..5]  = </span>
-                  {fmtArr(sb.preEmphasized, 6, 4)}{" "}
-                  <span className="text-muted">(y[n] = x[n] − {options.preEmphasis.toFixed(2)}·x[n−1])</span>
-                </div>
-                <div>
-                  <span className="text-muted">windowWeights w[0..5]  = </span>
-                  {fmtArr(sb.windowWeights, 6, 4)}{" "}
-                  <span className="text-muted">({WINDOW_INFO[options.windowType].label}, w[256] = {sb.windowWeights[256]?.toFixed(4) ?? "1.0000"})</span>
-                </div>
-                <div>
-                  <span className="text-muted">windowed xw[0..5]      = </span>
-                  {fmtArr(sb.windowed, 6, 4)}
-                </div>
-                <div>
-                  <span className="text-muted">autocorr R[0..6]       = </span>
-                  {fmtArr(sb.autocorrCoeffs, 7, 4)}
-                </div>
-                <div>
-                  <span className="text-muted">lpcCoeffs a[1..{sb.lpcCoeffs.length}] = </span>
-                  {fmtArr(sb.lpcCoeffs, 8, 4)}{" "}
-                  <span className="text-muted">· Gain G = {sb.lpcGain.toFixed(4)}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="col-span-12 lg:col-span-5">
-              <div className="mb-1.5 text-[12px] font-semibold text-muted">
-                Extracted Upper-Half-Plane Roots (r, θ) → (F_i, B_i)
-              </div>
-              <div className="max-h-[152px] overflow-y-auto bg-raised p-2 rounded-(--radius-sm)">
-                <table className="ui-fig w-full text-left text-[12px]">
-                  <thead>
-                    <tr className="border-b border-line text-muted">
-                      <th className="pb-1">Root z</th>
-                      <th className="pb-1">|z| = r</th>
-                      <th className="pb-1">θ / π</th>
-                      <th className="pb-1">Freq</th>
-                      <th className="pb-1">BW</th>
-                      <th className="pb-1">Role</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sb.allPoles
-                      .filter((p) => p.im >= 0 && p.radius > 0)
-                      .map((p, i) => (
-                        <tr key={i} className="border-b border-line/40 last:border-0">
-                          <td className="py-0.5">
-                            {p.re.toFixed(2)}+{p.im.toFixed(2)}j
-                          </td>
-                          <td className="py-0.5">{p.radius.toFixed(3)}</td>
-                          <td className="py-0.5">{p.anglePi.toFixed(3)}π</td>
-                          <td className="py-0.5">{Math.round(p.freqHz)} Hz</td>
-                          <td className="py-0.5">{Math.round(p.bandwidthHz)} Hz</td>
-                          <td className="py-0.5 font-semibold text-accent">
-                            {p.selectedAs ?? "rejected"}
-                          </td>
-                        </tr>
-                      ))}
-                    {sb.allPoles.filter((p) => p.im >= 0 && p.radius > 0).length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="py-2 text-center text-muted">
-                          No conjugate poles in current frame.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
 /**
  * Real-time hardware & acoustic capture monitor for Microphone and Tab/YouTube streams.
  * Updates its VU meter bar and voice-gate status via DOM refs at 60 fps without triggering React re-renders.
@@ -1015,13 +473,8 @@ export function Lab() {
   const targetId = useLabStore((s) => s.targetId);
   const activeView = useLabStore((s) => s.activeView);
   const setActiveView = useLabStore((s) => s.setActiveView);
-  const labMode = useLabStore((s) => s.labMode);
-  const setLabMode = useLabStore((s) => s.setLabMode);
   const frozen = useLabStore((s) => s.frozen);
   const toggleFreeze = useLabStore((s) => s.toggleFreeze);
-  const traceOpen = useLabStore((s) => s.traceOpen);
-  const setTraceOpen = useLabStore((s) => s.setTraceOpen);
-  const captureAndTrace = useLabStore((s) => s.captureAndTrace);
   const reset = useLabStore((s) => s.resetCalibration);
   const micError = useLabStore((s) => s.micError);
   const micStatus = useLabStore((s) => s.micStatus);
@@ -1037,9 +490,10 @@ export function Lab() {
   const wave = useLabStore((s) => s.synth.wave);
   const waveHz = useLabStore((s) => s.synth.waveHz);
   const testSignal = wave === "voice" ? null : wave;
+  const router = useRouter();
 
   // /lab?vowel=ii opens holding that vowel; /lab?signal=square&hz=440 opens on a test signal;
-  // /lab?exp=3 opens an experiment. The homepage, the atlas and the classroom page link here.
+  // /lab?exp=3, an older link, now goes to that experiment's own page.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const id = params.get("vowel");
@@ -1053,10 +507,8 @@ export function Lab() {
       });
     }
     const expParam = Number(params.get("exp"));
-    if (expParam >= 1 && expParam <= 5) {
-      useLabStore.getState().setActiveExperiment(expParam as 1 | 2 | 3 | 4 | 5);
-    }
-  }, []);
+    if (expParam >= 1 && expParam <= 5) router.replace(`/experiments/${expParam}`);
+  }, [router]);
 
   const plotHeight = solo ? "h-[min(62svh,620px)]" : "";
 
@@ -1066,27 +518,14 @@ export function Lab() {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.025em] text-ink">Laboratory</h1>
-            <div
-              role="group"
-              aria-label="Lab mode"
-              className="seg"
-            >
-              <button
-                type="button"
-                aria-pressed={labMode === "workspace"}
-                onClick={() => setLabMode("workspace")}
-                >
-                Workspace
-              </button>
-              <button
-                type="button"
-                aria-pressed={labMode === "experiments"}
-                onClick={() => setLabMode("experiments")}
-                data-hot={labMode === "experiments"}
-              >
-                Break the signal: 5 experiments
-              </button>
-            </div>
+            <nav aria-label="More of the lab" className="flex items-center gap-5 text-[15px] font-medium">
+              <Link href="/lab/trace" className="link">
+                Trace a frame
+              </Link>
+              <Link href="/experiments" className="link">
+                Experiments
+              </Link>
+            </nav>
           </div>
           {testSignal && !liveInput ? (
             <p className="mt-1 text-[15px] text-muted">
@@ -1108,14 +547,6 @@ export function Lab() {
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
           <SourceSwitch />
           <span className="flex items-center gap-4">
-            <button
-              type="button"
-              aria-pressed={traceOpen}
-              onClick={() => (traceOpen ? setTraceOpen(false) : captureAndTrace())}
-              className="btn btn-sm"
-            >
-              Trace this frame
-            </button>
             <button type="button" aria-pressed={frozen} onClick={toggleFreeze} className="ui-tab min-h-11 text-[13px] font-medium lg:min-h-8">
               Freeze
             </button>
@@ -1125,8 +556,6 @@ export function Lab() {
           </span>
         </div>
       </header>
-
-      <SignalChainHeader />
 
       {micStatus === "requesting" && (
         <p role="status" className="mb-3 flex items-center gap-2.5 bg-raised px-3 py-2.5 text-[13px] text-ink rounded-(--radius-sm)">
@@ -1140,10 +569,6 @@ export function Lab() {
         </p>
       )}
       {(sourceMode === "mic" || sourceMode === "stream") && <LiveInputMonitor />}
-
-      {labMode === "experiments" && <ExperimentsPanel />}
-
-      {traceOpen && <TraceInspector />}
 
       <div role="tablist" aria-label="Panels" className="no-scrollbar -mx-1 mb-3 flex gap-5 overflow-x-auto px-1">
         {VIEWS.map((v) => (

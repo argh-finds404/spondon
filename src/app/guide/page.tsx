@@ -217,14 +217,14 @@ export default function GuidePage() {
             >
               <p>
                 The window keys above the scope, and the <Key>Analysis</Key> tab, change the analyser itself:
-                rectangular, Hamming, Hann or Blackman window; pre-emphasis on or off; the model order from 4 to 20.
+                rectangular, Hamming, Hann or Blackman window; pre-emphasis on or off; the model order from 4 to 24.
               </p>
               <p>
-                <Key>Freeze</Key> holds the current frame so you can read it. <Key>Trace this frame</Key> opens the
+                <Key>Freeze</Key> holds the current frame so you can read it. <Link href="/lab/trace" className="link">Trace a frame</Link> opens the
                 eight stages of that frame one by one, with each stage&rsquo;s input and output side by side.
               </p>
               <p>
-                <Key>Break the signal: 5 experiments</Key> turns one stage at a time off or to an extreme and keeps the
+                The <Link href="/experiments" className="link">experiments</Link> turn one stage at a time off or to an extreme and keep the
                 normal result dashed underneath, so you can see exactly what that stage does.
               </p>
             </Step>

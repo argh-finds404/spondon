@@ -1,3 +1,4 @@
+import { WINDOW_TYPES } from "@/lib/dsp/windows";
 import type { WindowType } from "@/types/dsp";
 
 export type TakeSourceType = "mic" | "upload" | "synth";
@@ -67,11 +68,29 @@ const DB_VERSION = 1;
 const STORE_NAME = "takes";
 const BUNDLE_FORMAT = "spondon-take-v1";
 
-/** Automatic in-memory fallback when IndexedDB is unavailable (e.g. Node / Vitest or restricted storage). */
+/** In-memory fallback when IndexedDB is missing (Node, tests) or the browser refuses it (some private modes). */
 const memoryVault = new Map<string, SavedTake>();
+/** Set once IndexedDB has been tried: true when takes outlive the tab. */
+let persistent: boolean | null = null;
+/** Longest array kept from an imported frame: the analyser's own arrays are 512 long. */
+const MAX_FRAME_VALUES = 4096;
 
-function hasIndexedDb(): boolean {
-  return typeof indexedDB !== "undefined";
+/** False when takes only last until the tab is closed. Known after the first vault operation. */
+export function isVaultPersistent(): boolean {
+  return persistent !== false;
+}
+
+/** The database, or null when takes must live in memory instead. */
+async function vaultDb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === "undefined" || persistent === false) return null;
+  try {
+    const db = await openVaultDb();
+    persistent = true;
+    return db;
+  } catch {
+    persistent = false;
+    return null;
+  }
 }
 
 function cloneTake(take: SavedTake): SavedTake {
@@ -119,12 +138,12 @@ export function clearMemoryVault(): void {
 
 /** Return all saved takes sorted newest first (`createdAt` descending). */
 export async function listTakes(): Promise<SavedTake[]> {
-  if (!hasIndexedDb()) {
+  const db = await vaultDb();
+  if (!db) {
     return Array.from(memoryVault.values())
       .map(cloneTake)
       .sort((a, b) => b.createdAt - a.createdAt);
   }
-  const db = await openVaultDb();
   try {
     return await new Promise<SavedTake[]>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, "readonly");
@@ -145,11 +164,11 @@ export async function listTakes(): Promise<SavedTake[]> {
 
 /** Retrieve a single take by ID, or `null` if not found. */
 export async function getTake(id: string): Promise<SavedTake | null> {
-  if (!hasIndexedDb()) {
+  const db = await vaultDb();
+  if (!db) {
     const found = memoryVault.get(id);
     return found ? cloneTake(found) : null;
   }
-  const db = await openVaultDb();
   try {
     return await new Promise<SavedTake | null>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, "readonly");
@@ -165,11 +184,11 @@ export async function getTake(id: string): Promise<SavedTake | null> {
 /** Insert or overwrite a `SavedTake` record in the local vault. */
 export async function saveTake(take: SavedTake): Promise<void> {
   const clean = cloneTake(take);
-  if (!hasIndexedDb()) {
+  const db = await vaultDb();
+  if (!db) {
     memoryVault.set(clean.id, clean);
     return;
   }
-  const db = await openVaultDb();
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, "readwrite");
@@ -198,17 +217,18 @@ export async function updateTakeNotes(id: string, title: string, notes: string):
 
 /** Permanently remove a take from the local vault. */
 export async function deleteTake(id: string): Promise<void> {
-  if (!hasIndexedDb()) {
+  const db = await vaultDb();
+  if (!db) {
     memoryVault.delete(id);
     return;
   }
-  const db = await openVaultDb();
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, "readwrite");
       tx.objectStore(STORE_NAME).delete(id);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error("Failed to delete take from IndexedDB."));
+      tx.onabort = () => reject(tx.error ?? new Error("Deleting the take was aborted."));
     });
   } finally {
     db.close();
@@ -349,22 +369,23 @@ export async function importTakeBundleJson(jsonStr: string): Promise<SavedTake> 
       timestampMs: finiteOr(rep.timestampMs, 0),
       sampleRate: finiteOr(rep.sampleRate, rawTake.sampleRate),
       analysisRate: finiteOr(rep.analysisRate, 12000),
-      windowType: rep.windowType ?? "hamming",
+      windowType: WINDOW_TYPES.includes(rep.windowType) ? rep.windowType : "hamming",
       voiced: Boolean(rep.voiced),
       fftMagnitudeDb: Array.isArray(rep.fftMagnitudeDb)
-        ? rep.fftMagnitudeDb.map((v) => finiteOr(v, -100))
+        ? rep.fftMagnitudeDb.slice(0, MAX_FRAME_VALUES).map((v) => finiteOr(v, -100))
         : [],
       lpcEnvelopeDb: Array.isArray(rep.lpcEnvelopeDb)
-        ? rep.lpcEnvelopeDb.map((v) => finiteOr(v, -100))
+        ? rep.lpcEnvelopeDb.slice(0, MAX_FRAME_VALUES).map((v) => finiteOr(v, -100))
         : [],
       timeDomainRaw: Array.isArray(rep.timeDomainRaw)
-        ? rep.timeDomainRaw.map((v) => finiteOr(v, 0))
+        ? rep.timeDomainRaw.slice(0, MAX_FRAME_VALUES).map((v) => finiteOr(v, 0))
         : [],
       timeDomainWindowed: Array.isArray(rep.timeDomainWindowed)
-        ? rep.timeDomainWindowed.map((v) => finiteOr(v, 0))
+        ? rep.timeDomainWindowed.slice(0, MAX_FRAME_VALUES).map((v) => finiteOr(v, 0))
         : [],
       zPlanePoles: Array.isArray(rep.zPlanePoles)
         ? rep.zPlanePoles
+            .slice(0, 64)
             .filter((p) => p && typeof p === "object")
             .map((p) => ({
               re: finiteOr(p.re, 0),

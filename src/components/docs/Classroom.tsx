@@ -36,7 +36,7 @@ const UNITS: Unit[] = [
     hz: 440,
     steps: [
       "Run a 440 Hz sine here. The scope on the right shows one frame of it.",
-      "In the lab, press Trace this frame: its first stage shows the same tone as separate samples.",
+      "Open Trace a frame: its first stage shows the same tone as separate samples.",
       "Count the samples in one period: the analyser keeps about 12,000 samples a second.",
     ],
     see: "About 27 samples in each period of the 440 Hz tone.",
@@ -94,7 +94,7 @@ const UNITS: Unit[] = [
         blurrier, so two close tones are harder to separate.
       </>
     ),
-    lab: "/lab?signal=twotone&hz=500&exp=1",
+    lab: "/lab?signal=twotone&hz=500",
   },
   {
     id: "time-frequency",
@@ -151,7 +151,7 @@ const UNITS: Unit[] = [
     hz: 140,
     steps: [
       "Run the synthetic voice. The comb of harmonics is the pitch; the cyan envelope over it is the mouth.",
-      "In the lab, open Experiment 3 and change the model order from 12 to 4 and to 24.",
+      "Open Experiment 3 and change the model order from 12 to 4 and to 24.",
       "Then Experiment 4: raise the pitch and watch the comb spread while the envelope stays put.",
     ],
     see: "Three envelope peaks, the formants, that stay where they are whatever the pitch.",
@@ -162,7 +162,7 @@ const UNITS: Unit[] = [
         resonances, and the spare ones fit the harmonic ripple of the source instead of the tract.
       </>
     ),
-    lab: "/lab?exp=3",
+    lab: "/experiments/3",
   },
   {
     id: "poles",
@@ -172,7 +172,7 @@ const UNITS: Unit[] = [
     wave: "voice",
     hz: 140,
     steps: [
-      "Open Experiment 5 in the lab and drag the F1 pole around the circle.",
+      "Open Experiment 5 and drag the F1 pole around the circle.",
       "Its angle sets the frequency of the resonance; its distance from the circle sets how sharp it is.",
       "Watch the vowel chart and the sand figure answer.",
     ],
@@ -184,7 +184,7 @@ const UNITS: Unit[] = [
         F1 near /ɑː/.
       </>
     ),
-    lab: "/lab?exp=5",
+    lab: "/experiments/5",
   },
 ];
 
@@ -270,7 +270,7 @@ export function Classroom() {
                   {on ? "Running here" : "Run it here"}
                 </button>
                 <Link href={unit.lab} className="btn btn-quiet btn-sm">
-                  Open in the lab
+                  {unit.lab.startsWith("/experiments") ? "Open the experiment" : "Open in the lab"}
                 </Link>
                 <span className="text-[14px] text-muted">
                   {unit.wave === "voice" ? "Synthetic voice" : SIGNAL_INFO[unit.wave].label}

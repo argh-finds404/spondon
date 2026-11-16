@@ -427,7 +427,8 @@ class LabRuntime {
     r = Math.max(0.5, Math.min(0.995, r));
     const minFreq = formantIndex === 1 ? 180 : 650;
     const maxFreq = formantIndex === 1 ? 1150 : 3200;
-    const fs = 12000;
+    // The rate the poles live at: about 12 kHz, but 11,025 Hz when the input runs at 44.1 kHz.
+    const fs = this.getActiveTelemetry().analysisRate || 12000;
     let theta = Math.atan2(absIm, rawRe);
     const minTheta = (2 * Math.PI * minFreq) / fs;
     const maxTheta = (2 * Math.PI * maxFreq) / fs;
@@ -460,7 +461,8 @@ class LabRuntime {
   /** Keyboard accessibility helper: nudge Formant 1 or 2 pole by dRadius and dFreqHz. */
   nudgePoleOverride(formantIndex: 1 | 2, dRadius: number, dFreqHz: number): PoleOverrideEntry {
     const existing = this.poleOverrides[formantIndex];
-    const fs = 12000;
+    // The rate the poles live at: about 12 kHz, but 11,025 Hz when the input runs at 44.1 kHz.
+    const fs = this.getActiveTelemetry().analysisRate || 12000;
     let curRadius = existing?.radius ?? 0;
     let curFreq = existing?.freqHz ?? 0;
     if (!existing) {

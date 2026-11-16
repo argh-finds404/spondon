@@ -11,7 +11,9 @@ A real-time acoustic DSP laboratory that runs in the browser. Speak (or let the 
 | Page | What it is for |
 | --- | --- |
 | `/` | A keyboard of vowels: press a key (or A S D F G H J K) to hear a vowel and watch its figure form on the orange plate, or sing into it. Then a bench of nine live instruments and the signal chain turned by the scroll |
-| `/lab` | The instrument. Vowel chart, 3D sand plate, spectrum with LPC envelope, Z-plane, scope, spectrogram, pitch track and every reading. Built-in voice, test signals, microphone or another tab's audio; freeze, trace a frame stage by stage, and five "break the signal" experiments |
+| `/lab` | The instrument: vowel chart, 3D sand plate, spectrum with LPC envelope, Z-plane, scope, spectrogram, pitch track and every reading. Built-in voice, test signals, microphone or another tab's audio |
+| `/lab/trace` | One 43 ms frame held still and walked through the eight stages of the analysis: each stage's input and output, its equation, and the one setting that changes it, recomputed on that same frame |
+| `/experiments` | Five experiments, each on its own page (`/experiments/1` to `/5`): break the window, pre-emphasis, the model order, the pitch or a pole, and see the change measured against the normal setting, drawn dashed. Leaving an experiment puts its setting back |
 | `/vowels` | The eight reference vowels: where each sits, how the mouth makes it, how it sounds, its figure |
 | `/compare` | Record takes or open audio files, keep them in this browser with notes, and lay one over another |
 | `/classroom` | Seven units for a first signals course (sampling, Fourier series, windows and leakage, the spectrogram, autocorrelation pitch, linear prediction, the z-plane), each with a live signal, a question and a folded answer |
@@ -24,7 +26,7 @@ Light and dark themes follow the system setting until you choose one with the to
 
 ### Test signals
 
-Besides the synthetic voice, the built-in source can be a sine, square, sawtooth or triangle wave, two tones 20 dB apart, a 100 Hz–3 kHz sweep, white noise or an impulse train (`src/lib/dsp/signals.ts`). The periodic ones are built from harmonics up to 8 kHz, so they are band-limited, and their spectra are known in advance. Open one directly with `/lab?signal=square&hz=200`; `/lab?vowel=ii` opens on a vowel and `/lab?exp=3` on an experiment.
+Besides the synthetic voice, the built-in source can be a sine, square, sawtooth or triangle wave, two tones 20 dB apart, a 100 Hz–3 kHz sweep, white noise or an impulse train (`src/lib/dsp/signals.ts`). The periodic ones are built from harmonics up to 8 kHz, so they are band-limited, and their spectra are known in advance. Open one directly with `/lab?signal=square&hz=200`; `/lab?vowel=ii` opens on a vowel.
 
 ## Measured, derived, mapped
 
@@ -77,9 +79,18 @@ The figure is the standing wave $C(x, y) = \cos(n\pi x)\cos(m\pi y) - \cos(m\pi 
 - Each test signal has the spectrum theory says it should: a square wave's odd harmonics at 1/k, a triangle's at 1/k², a flat comb for the impulse train, nothing above 8 kHz.
 - The local takes vault saves, lists, updates and deletes takes, and round-trips its export format.
 
-80 tests in all, across the DSP engine, the API, the lab's runtime and the takes vault.
+83 tests in all, across the DSP engine, the API, the lab's runtime and the takes vault.
 
 **Known limitation.** Jitter and shimmer come from peak picking on the waveform, which reads about 1.2–1.4× high because one cycle's ringing shifts the next peak. The tests hold the reading to between 0.9× and 1.6× the injected value and to rising with it. Use them as relative measures, not clinical ones.
+
+## Storage: no database server, on purpose
+
+SPONDON has no backend database and no accounts. Everything the lab measures stays in the tab, which is what makes "your voice never leaves the device" true. Two things are kept, both in the visitor's own browser:
+
+- **Saved takes** (`/compare`): IndexedDB, database `spondon-vault-v1`, one object store `takes` keyed by `id` with an index on `createdAt` (`src/lib/storage/takes-vault.ts`). Each take holds its 16-bit WAV, a summary and one representative frame. Takes can be exported to and imported from a `.spondon.json` file; an imported file is treated as untrusted and every field is checked. If the browser refuses storage (some private modes), takes are kept in memory for the visit and the page says so.
+- **The theme** (light or dark): local storage, key `spondon-theme`.
+
+Nothing is uploaded. The API below is stateless: it analyses what it is sent, in memory, and keeps nothing.
 
 ## HTTP API
 
@@ -129,6 +140,8 @@ src/lib/storage/            the local takes vault (IndexedDB, never uploaded)
 src/app/api/                /api/vowels, /api/synth, /api/analyze
 src/store/lab-store.ts      the shared runtime: one analyser, many views, no per-frame React state
 src/components/instrument/  the canvases (draw.ts), the 3D plate, readouts and controls
+src/components/experiments/ the five experiments: their text, formulas and one shared page
+src/components/lab/         the lab, and the frame trace (stages.ts holds each stage and its equation)
 src/app/, src/components/   pages, the lab, the homepage, the docs
 ```
 

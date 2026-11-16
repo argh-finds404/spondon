@@ -11,6 +11,7 @@ import { useLabStore } from "@/store/lab-store";
 
 const LINKS = [
   { href: "/lab", label: "Lab" },
+  { href: "/experiments", label: "Experiments" },
   { href: "/vowels", label: "Vowels" },
   { href: "/compare", label: "Compare" },
   { href: "/classroom", label: "Classroom" },

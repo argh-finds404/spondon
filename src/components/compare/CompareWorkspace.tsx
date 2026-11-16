@@ -12,6 +12,7 @@ import {
   deleteTake,
   exportTakeBundleJson,
   importTakeBundleJson,
+  isVaultPersistent,
   listTakes,
   saveTake,
   updateTakeNotes,
@@ -440,6 +441,9 @@ export function CompareWorkspace() {
         const items = await listTakes();
         if (cancelled) return;
         setTakes(items);
+        if (!isVaultPersistent()) {
+          setErrorMsg("This browser is not letting the site keep data, so takes last only until you close the tab.");
+        }
         if (items.length >= 2) {
           setTakeAId(items[1].id);
           setTakeBId(items[0].id);
@@ -756,8 +760,14 @@ export function CompareWorkspace() {
 
   const handleDeleteTake = async (id: string) => {
     if (playingTakeId === id) stopPlayback();
-    await deleteTake(id);
-    const items = await listTakes();
+    let items: SavedTake[];
+    try {
+      await deleteTake(id);
+      items = await listTakes();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Could not delete the take.");
+      return;
+    }
     setTakes(items);
     if (takeAId === id) {
       setTakeAId(null);
@@ -770,7 +780,13 @@ export function CompareWorkspace() {
   };
 
   const handleSaveNotes = async (id: string, title: string, notes: string) => {
-    const updated = await updateTakeNotes(id, title, notes);
+    let updated: SavedTake | null;
+    try {
+      updated = await updateTakeNotes(id, title, notes);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Could not save the notes.");
+      return;
+    }
     if (!updated) return;
     setTakes((prev) => prev.map((t) => (t.id === id ? updated : t)));
   };
