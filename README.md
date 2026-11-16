@@ -61,7 +61,7 @@ $$H(z) = \frac{G}{A(z)} = \frac{G}{1 - \sum_{k=1}^{p} a_k z^{-k}}$$
 
 $$F_i = \frac{\theta_i f_s}{2\pi}, \qquad B_i = -\frac{\ln r_i \, f_s}{\pi} \qquad \text{for a pole } z_i = r_i e^{j\theta_i}$$
 
-$$\text{jitter} = \frac{\operatorname{mean}|T_i - T_{i+1}|}{\operatorname{mean} T_i} \times 100\%, \qquad \text{shimmer} = \operatorname{mean}\left|20\log_{10}\frac{A_{i+1}}{A_i}\right|\ \text{dB}$$
+$$\text{jitter} = \frac{\text{mean}\,|T_i - T_{i+1}|}{\text{mean}\,T_i} \times 100\%, \qquad \text{shimmer} = \text{mean}\left|20\log_{10}\frac{A_{i+1}}{A_i}\right|\ \text{dB}$$
 
 $$z(f) = \frac{26.81 f}{1960 + f} - 0.53 \ \text{Bark} \quad \text{(Traunmüller 1990)}$$
 
