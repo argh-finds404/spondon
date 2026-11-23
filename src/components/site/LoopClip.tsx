@@ -9,6 +9,8 @@ export function LoopClip({
   label,
   width,
   height,
+  playbackRate = 1,
+  paused = false,
   className,
 }: {
   src: string;
@@ -16,20 +18,43 @@ export function LoopClip({
   label: string;
   width: number;
   height: number;
+  playbackRate?: number;
+  paused?: boolean;
   className?: string;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const inViewRef = useRef(false);
+
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    video.playbackRate = playbackRate;
+  }, [playbackRate]);
+
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    if (paused || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      video.pause();
+    } else if (inViewRef.current) {
+      void video.play().catch(() => undefined);
+    }
+  }, [paused]);
 
   useEffect(() => {
     const video = ref.current;
     if (!video || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const io = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) void video.play().catch(() => undefined);
-      else video.pause();
-    });
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        inViewRef.current = entry.isIntersecting;
+        if (entry.isIntersecting && !paused) void video.play().catch(() => undefined);
+        else video.pause();
+      },
+      { rootMargin: "320px 0px" },
+    );
     io.observe(video);
     return () => io.disconnect();
-  }, []);
+  }, [paused]);
 
   return (
     <video
@@ -37,7 +62,7 @@ export function LoopClip({
       muted
       loop
       playsInline
-      preload="none"
+      preload="metadata"
       poster={poster}
       width={width}
       height={height}
