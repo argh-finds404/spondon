@@ -1177,6 +1177,9 @@ const MAX_CELLS = 96;
 const cosN = new Float32Array(MAX_CELLS);
 const cosM = new Float32Array(MAX_CELLS);
 
+let cachedDimPath: Path2D | null = null;
+let cachedDimKey = "";
+
 /**
  * C(x, y) = cos(nπx) cos(mπy) − cos(mπx) cos(nπy) on a grid of dots; a dot is lit where the
  * plate would stay still. The cosines are separable, so a frame costs 2N of them, not N².
@@ -1198,22 +1201,47 @@ export function paintDotFigure(ctx: Ctx, w: number, h: number, m: number, n: num
   const full = Math.max(1.5, pitch * 0.62);
   if (dim) {
     ctx.fillStyle = dim;
-    for (let j = 0; j < cells; j++) {
-      for (let i = 0; i < cells; i++) {
-        ctx.fillRect(x0 + i * pitch + (pitch - 1) / 2, y0 + j * pitch + (pitch - 1) / 2, 1, 1);
+    const dimKey = `${w}:${h}:${cells}`;
+    if (typeof Path2D !== "undefined") {
+      if (cachedDimKey !== dimKey || !cachedDimPath) {
+        const p = new Path2D();
+        for (let j = 0; j < cells; j++) {
+          const py = y0 + j * pitch + (pitch - 1) / 2;
+          for (let i = 0; i < cells; i++) {
+            p.rect(x0 + i * pitch + (pitch - 1) / 2, py, 1, 1);
+          }
+        }
+        cachedDimPath = p;
+        cachedDimKey = dimKey;
       }
+      ctx.fill(cachedDimPath);
+    } else {
+      ctx.beginPath();
+      for (let j = 0; j < cells; j++) {
+        const py = y0 + j * pitch + (pitch - 1) / 2;
+        for (let i = 0; i < cells; i++) {
+          ctx.rect(x0 + i * pitch + (pitch - 1) / 2, py, 1, 1);
+        }
+      }
+      ctx.fill();
     }
   }
   ctx.fillStyle = lit;
+  ctx.beginPath();
   for (let j = 0; j < cells; j++) {
+    const rowY = y0 + j * pitch;
+    const cmJ = cosM[j];
+    const cnJ = cosN[j];
     for (let i = 0; i < cells; i++) {
-      const c = cosN[i] * cosM[j] - cosM[i] * cosN[j];
+      const c = cosN[i] * cmJ - cosM[i] * cnJ;
       const a = 1 - (c < 0 ? -c : c) / band;
       if (a <= 0.15) continue;
       const d = full * (a > 1 ? 1 : a);
-      ctx.fillRect(x0 + i * pitch + (pitch - d) / 2, y0 + j * pitch + (pitch - d) / 2, d, d);
+      const offset = (pitch - d) / 2;
+      ctx.rect(x0 + i * pitch + offset, rowY + offset, d, d);
     }
   }
+  ctx.fill();
 }
 
 const targetModes: Modes = { m: 0, n: 0 };

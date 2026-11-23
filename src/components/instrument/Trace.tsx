@@ -140,7 +140,8 @@ export function Trace({
       const ch = box.clientHeight || Math.round(rect.height);
       s.w = Math.max(40, cw);
       s.h = Math.max(24, ch);
-      dpr = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
+      const maxDpr = s.bare ? 2 : 2.5;
+      dpr = Math.min(maxDpr, Math.max(1.5, window.devicePixelRatio || 1));
       canvas.width = Math.round(s.w * dpr);
       canvas.height = Math.round(s.h * dpr);
       draw(frameRef.current ?? labRuntime.getActiveTelemetry());
