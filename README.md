@@ -10,7 +10,7 @@ A real-time acoustic DSP laboratory that runs in the browser. Speak (or let the 
 
 | Page | What it is for |
 | --- | --- |
-| `/` | A keyboard of vowels: press a key (or A S D F G H J K) to hear a vowel and watch its figure form on the orange plate, or sing into it. Then a bench of nine live instruments and the signal chain turned by the scroll |
+| `/` | A keyboard of vowels: press a key (or A S D F G H J K) to hear a vowel and watch its figure form on the orange plate, or sing into it. Then a bench of nine live instruments, the signal chain turned by the scroll, and the physical Chladni plate film with the three historical instruments |
 | `/lab` | The instrument: vowel chart, 3D sand plate, spectrum with LPC envelope, Z-plane, scope, spectrogram, pitch track and every reading. Built-in voice, test signals, microphone or another tab's audio |
 | `/lab/trace` | One 43 ms frame held still and walked through the eight stages of the analysis: each stage's input and output, its equation, and the one setting that changes it, recomputed on that same frame |
 | `/experiments` | Five experiments, each on its own page (`/experiments/1` to `/5`): break the window, pre-emphasis, the model order, the pitch or a pole, and see the change measured against the normal setting, drawn dashed. Leaving an experiment puts its setting back |
