@@ -26,27 +26,49 @@ export function Reveal({
     const el = ref.current;
     if (!el) return;
     const parts = el.matches(".reveal") ? [el] : Array.from(el.querySelectorAll<HTMLElement>(".reveal"));
+    let done = false;
     let raf = 0;
-    const stop = () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      if (raf) cancelAnimationFrame(raf);
-    };
-    const check = () => {
-      raf = 0;
-      const box = el.getBoundingClientRect();
-      if (box.top > window.innerHeight * 0.88) return;
-      // A block already scrolled past appears at once; only a block arriving on screen animates in.
-      const passed = box.bottom <= 0;
+
+    const finish = (passed: boolean) => {
+      if (done) return;
+      done = true;
       for (const part of parts) {
         if (passed) part.style.transition = "none";
         part.classList.add("is-in");
       }
       stop();
     };
-    function onScroll() {
-      if (!raf) raf = requestAnimationFrame(check);
+
+    const check = () => {
+      raf = 0;
+      if (done) return;
+      const box = el.getBoundingClientRect();
+      if (box.top > window.innerHeight * 0.9) return;
+      finish(box.bottom <= 0);
+    };
+
+    const onScroll = () => {
+      if (!done && !raf) raf = requestAnimationFrame(check);
+    };
+
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry || done) return;
+        if (entry.isIntersecting || entry.boundingClientRect.top <= window.innerHeight * 0.9) {
+          finish(entry.boundingClientRect.bottom <= 0);
+        }
+      },
+      { rootMargin: "0px 0px -6% 0px" },
+    );
+
+    function stop() {
+      io.disconnect();
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
     }
+
+    io.observe(el);
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onScroll);
     check();
