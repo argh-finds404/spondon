@@ -122,7 +122,7 @@ const STAGES: Stage[] = [
   },
 ];
 
-const STEP_SVH = 30;
+const STEP_SVH = 22;
 
 function subscribeMotion(onChange: () => void) {
   const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -161,7 +161,7 @@ export function SignalChain() {
   const pinned = useSyncExternalStore(
     subscribeMotion,
     () => !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    () => false,
+    () => true,
   );
   const sectionRef = useRef<HTMLElement>(null);
   const drumRef = useRef<HTMLDivElement>(null);
