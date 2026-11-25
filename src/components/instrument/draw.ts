@@ -106,6 +106,10 @@ export interface DrawState {
   px: number;
   py: number;
   targetId: string;
+  /** Personal speaker vocal-tract scale factor applied to reference vowel coordinates. */
+  vtlScale: number;
+  /** Overlay the homomorphic liftered cepstral envelope (and anti-zeros) on spectrum plots. */
+  showCepstrum: boolean;
   /** No axes or labels: for small fragments. */
   bare: boolean;
   /** Slowly decaying amplitude peak, so the vertical scale does not twitch. */
@@ -147,6 +151,8 @@ export function createDrawState(): DrawState {
     px: -1,
     py: -1,
     targetId: "aa",
+    vtlScale: 1,
+    showCepstrum: false,
     bare: false,
     peak: 0.05,
     modes: { m: 2.8, n: 5.6 },
@@ -622,6 +628,41 @@ function spectrum(ctx: Ctx, s: DrawState, t: DSPFrameTelemetry, fft: boolean, lp
     ctx.stroke();
   }
 
+  if (lpc && s.showCepstrum && t.cepstralEnvelopeDb && t.cepstralEnvelopeDb.length === bins) {
+    ctx.strokeStyle = INK.lock;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    const cep = t.cepstralEnvelopeDb;
+    for (let b = 0; b < bins; b++) {
+      const y = padT + (MAX_DB - cep[b]) * yScale;
+      if (b === 0) ctx.moveTo(padL, y);
+      else ctx.lineTo(padL + (b / (bins - 1)) * w, y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Mark prominent spectral anti-resonance (zero/notch) when detected
+    const zeroHz = t.regime?.antiResonanceHz ?? 0;
+    if (zeroHz > 0 && zeroHz < nyquist) {
+      const zx = padL + (zeroHz / nyquist) * w;
+      const zBin = Math.min(bins - 1, Math.round((zeroHz / nyquist) * (bins - 1)));
+      const zy = padT + (MAX_DB - cep[zBin]) * yScale;
+      ctx.strokeStyle = INK.lock;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(zx, zy, 4, 0, Math.PI * 2);
+      ctx.stroke();
+      if (!s.bare) {
+        ctx.font = s.fontStrong;
+        ctx.fillStyle = INK.lock;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillText("Z0", zx, Math.min(padT + h - 12, zy + 6));
+      }
+    }
+  }
+
   if (formants && t.formants.confidence > 0.05) {
     const f = t.formants;
     ctx.font = s.fontStrong;
@@ -661,7 +702,11 @@ function spectrum(ctx: Ctx, s: DrawState, t: DSPFrameTelemetry, fft: boolean, lp
     ctx.moveTo(Math.round(s.px) + 0.5, padT);
     ctx.lineTo(Math.round(s.px) + 0.5, padT + h);
     ctx.stroke();
-    s.hover = `${Math.round(u * nyquist)} Hz · FFT ${t.fftMagnitudeDb[bin].toFixed(1)} dB · LPC ${t.lpcEnvelopeDb[bin].toFixed(1)} dB`;
+    const cepNote =
+      s.showCepstrum && t.cepstralEnvelopeDb
+        ? ` · Cep ${t.cepstralEnvelopeDb[bin].toFixed(1)} dB`
+        : "";
+    s.hover = `${Math.round(u * nyquist)} Hz · FFT ${t.fftMagnitudeDb[bin].toFixed(1)} dB · LPC (${t.lpcMethod === "burg" ? "Burg" : "Autocorr"}) ${t.lpcEnvelopeDb[bin].toFixed(1)} dB${cepNote}`;
   } else {
     s.hover = "";
   }
@@ -1029,11 +1074,12 @@ const drawVowel: DrawFn = (ctx, s, t) => {
   }
 
   const locked = t.formants.confidence > 0.05 && t.activeTargetMatch.convergenceScore >= LOCK_SCORE;
+  const vtlScale = t.vtlScale || s.vtlScale || 1;
 
   for (let i = 0; i < VOWEL_TARGETS.length; i++) {
     const v = VOWEL_TARGETS[i];
-    const vx = xOf(v.targetF2);
-    const vy = yOf(v.targetF1);
+    const vx = xOf(v.targetF2 * vtlScale);
+    const vy = yOf(v.targetF1 * vtlScale);
     const selected = v.id === s.targetId;
     if (selected) {
       const rx = Math.max(15, (v.toleranceHz / (A.f2Max - A.f2Min)) * w * 1.3);
@@ -1139,7 +1185,7 @@ const drawVowel: DrawFn = (ctx, s, t) => {
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(cx, cy);
-    ctx.lineTo(xOf(target.targetF2), yOf(target.targetF1));
+    ctx.lineTo(xOf(target.targetF2 * vtlScale), yOf(target.targetF1 * vtlScale));
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = locked ? INK.lock : INK.accent;
@@ -1159,10 +1205,11 @@ const drawVowel: DrawFn = (ctx, s, t) => {
 /** Which target, if any, is under a point of the vowel chart. */
 export function pickVowel(s: DrawState, x: number, y: number): string | null {
   setVowelBox(s);
+  const scale = s.vtlScale || 1;
   let best: string | null = null;
   let bestD = 34;
   for (const v of VOWEL_TARGETS) {
-    const d = Math.hypot(x - xOf(v.targetF2), y - yOf(v.targetF1));
+    const d = Math.hypot(x - xOf(v.targetF2 * scale), y - yOf(v.targetF1 * scale));
     if (d < bestD) {
       bestD = d;
       best = v.id;

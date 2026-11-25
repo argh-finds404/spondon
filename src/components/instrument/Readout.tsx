@@ -58,6 +58,14 @@ const FIELDS = {
   order: (t) => t.lpcCoefficients.length.toString(),
   binHz: (t) => (t.analysisRate / (2 * t.fftMagnitudeDb.length)).toFixed(1),
   frameMs: (t) => ((1000 * t.timeDomainRaw.length) / t.analysisRate).toFixed(1),
+  regime: (t) => t.regime?.label ?? NONE,
+  regimeDetail: (t) => t.regime?.detail ?? NONE,
+  centroid: (t) => (t.regime && t.regime.spectralCentroidHz > 0 ? Math.round(t.regime.spectralCentroidHz).toString() : NONE),
+  flatness: (t) => (t.regime && t.stability.rmsDb > -58 ? (t.regime.spectralFlatness * 100).toFixed(0) : NONE),
+  tractLength: (t) => (t.regime && t.regime.vocalTractLengthCm > 0 ? t.regime.vocalTractLengthCm.toFixed(1) : NONE),
+  glideSpeed: (t) => (t.regime && t.regime.trajectorySpeedHzPerSec > 25 ? Math.round(t.regime.trajectorySpeedHzPerSec).toString() : "0"),
+  cepstralF0: (t) => (t.regime && t.regime.cepstralF0Hz > 0 ? t.regime.cepstralF0Hz.toFixed(1) : NONE),
+  antiZero: (t) => (t.regime && t.regime.antiResonanceHz > 0 ? Math.round(t.regime.antiResonanceHz).toString() : NONE),
 } satisfies Record<string, (t: DSPFrameTelemetry) => string>;
 
 export type ReadoutField = keyof typeof FIELDS;

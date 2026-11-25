@@ -63,6 +63,8 @@ export function Trace({
   const drawFnRef = useRef<((t: DSPFrameTelemetry) => void) | null>(null);
   const draggingPoleRef = useRef<1 | 2 | null>(null);
   const targetId = useLabStore((s) => s.targetId);
+  const showCepstrum = useLabStore((s) => s.showCepstrum);
+  const vtlScale = useLabStore((s) => s.analyzerOptions.vtlScale ?? 1);
   const frozen = useLabStore((s) => s.frozen);
   const recomputeCount = useLabStore((s) => s.recomputeCount);
   const baselineVersion = useLabStore((s) => s.baselineVersion);
@@ -74,6 +76,8 @@ export function Trace({
     baselineFrameRef.current = baselineFrame;
     stateRef.current.bare = bare;
     stateRef.current.targetId = targetVowel ?? targetId;
+    stateRef.current.showCepstrum = showCepstrum;
+    stateRef.current.vtlScale = vtlScale;
     stateRef.current.trail = frame ? null : labRuntime.trail;
     stateRef.current.draggablePoles = draggablePoles;
     stateRef.current.selectedPoleFormant = selectedPoleFormant;
@@ -87,6 +91,8 @@ export function Trace({
     bare,
     targetId,
     targetVowel,
+    showCepstrum,
+    vtlScale,
     compareBaseline,
     frame,
     baselineFrame,
