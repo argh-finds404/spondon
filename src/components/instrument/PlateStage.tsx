@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
+import { useLabStore } from "@/store/lab-store";
 import type { Plate3DProps } from "./Plate3D";
 import { Trace } from "./Trace";
 
@@ -34,8 +35,10 @@ function hasWebGL(): boolean {
  * The plate in 3D while it is on screen; unmounted (and its GL context released) when it is not.
  * Without WebGL the same figure is drawn as a dot matrix on a 2D canvas.
  */
-export function PlateStage({ className, ...plate }: Plate3DProps & { className?: string }) {
+export function PlateStage({ className, shapeModel, ...plate }: Plate3DProps & { className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
+  const storeShape = useLabStore((s) => s.shapeModel);
+  const resolvedShape = shapeModel ?? storeShape;
   const [mode, setMode] = useState<"idle" | "3d" | "2d">("idle");
 
   useEffect(() => {
@@ -53,7 +56,11 @@ export function PlateStage({ className, ...plate }: Plate3DProps & { className?:
     <div ref={ref} role="img" aria-label={LABEL} className={`relative overflow-hidden ${className ?? ""}`}>
       {mode === "3d" && (
         <div className="absolute inset-0">
-          <Plate3D grains={typeof window !== "undefined" && window.innerWidth < 640 ? 6000 : 10000} {...plate} />
+          <Plate3D
+            grains={typeof window !== "undefined" && window.innerWidth < 640 ? 6000 : 10000}
+            shapeModel={resolvedShape}
+            {...plate}
+          />
         </div>
       )}
       {mode === "2d" && (
