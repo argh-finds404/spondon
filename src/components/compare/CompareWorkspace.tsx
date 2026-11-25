@@ -3,10 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Prov } from "@/components/instrument/controls";
+import { InstrumentSelect, type SelectOption } from "@/components/instrument/InstrumentSelect";
+import { PlateStage } from "@/components/instrument/PlateStage";
 import { Trace } from "@/components/instrument/Trace";
 import { analyzeTakeAtTime, ingestAudioFileOrBuffer, telemetryFromSavedTake } from "@/lib/dsp/file-ingest";
+import { computeVocalTractArea, solveBurgLPC } from "@/lib/dsp/models";
+import { extractTopSpectralPeaks, TRACT_SECTIONS } from "@/lib/dsp/regime";
 import { synthesizeVoice } from "@/lib/dsp/synth";
-import { findVowel, nearestVowel, VOWEL_TARGETS, vowelGlyph } from "@/lib/dsp/vowel-targets";
+import { evaluateTargetConvergence, findVowel, nearestVowel, VOWEL_TARGETS, vowelGlyph } from "@/lib/dsp/vowel-targets";
 import { decodeWav } from "@/lib/dsp/wav";
 import {
   deleteTake,
@@ -19,13 +23,45 @@ import {
   type SavedTake,
   type TakeSourceType,
 } from "@/lib/storage/takes-vault";
-import { labRuntime, useLabStore } from "@/store/lab-store";
+import { labRuntime, useLabStore, type ShapeModel } from "@/store/lab-store";
 import type { DSPFrameTelemetry } from "@/types/dsp";
 
 type SlotBMode = "saved" | "mic" | "synth";
 type SourceFilter = "all" | TakeSourceType;
+type CompareTab = "morph3d" | "spectra" | "notes";
 
-const REC_DURATIONS = [3, 5, 10, 15] as const;
+const REC_DURATION_OPTIONS: readonly SelectOption<string>[] = [
+  { value: "3", label: "3 sec", hint: "Quick vowel" },
+  { value: "5", label: "5 sec", hint: "Default" },
+  { value: "10", label: "10 sec", hint: "Phrase" },
+  { value: "15", label: "15 sec", hint: "Long take" },
+];
+
+const TARGET_VOWEL_OPTIONS: readonly SelectOption<string>[] = [
+  { value: "auto", label: "Auto-detect vowel", hint: "Nearest in Bark" },
+  ...VOWEL_TARGETS.map((v) => ({
+    value: v.id,
+    badge: v.banglaSymbol ?? `/${v.symbol}/`,
+    banglaBadge: Boolean(v.banglaSymbol),
+    label: v.banglaSymbol ? `/${v.symbol}/ · ${v.label.split(",")[0]}` : v.label.split(",")[0],
+    hint: `${v.targetF1}/${v.targetF2} Hz`,
+  })),
+];
+
+const SYNTH_REF_OPTIONS: readonly SelectOption<string>[] = VOWEL_TARGETS.map((v) => ({
+  value: v.id,
+  badge: v.banglaSymbol ?? `/${v.symbol}/`,
+  banglaBadge: Boolean(v.banglaSymbol),
+  label: v.banglaSymbol ? `Synth /${v.symbol}/` : `Synth ${v.label.split(",")[0]}`,
+  hint: `${v.targetF1} · ${v.targetF2} Hz`,
+}));
+
+const SHAPE_OPTIONS: readonly SelectOption<ShapeModel>[] = [
+  { value: "square", label: "Square plate", hint: "Chladni C(x,z)=0" },
+  { value: "circular", label: "Bessel drum", hint: "Circular J_m(αr)" },
+  { value: "harmonic", label: "Harmonic field", hint: "3D FFT wave mesh" },
+  { value: "tract", label: "3D Vocal tract", hint: "Glottis → lips tube" },
+];
 
 function formatTimeStamp(ms: number): string {
   try {
@@ -68,6 +104,64 @@ function formatDelta(valA: number, valB: number, decimals = 0, unit = ""): strin
   return `${sign}${formatted}${unit ? ` ${unit}` : ""}`;
 }
 
+/** Compute vocal-tract area array from time-domain frame so saved takes also drive the 3D Vocal Tract tube. */
+function deriveTractAreaForFrame(frame: DSPFrameTelemetry): Float32Array {
+  const out = new Float32Array(TRACT_SECTIONS).fill(0.5);
+  let energy = 0;
+  for (let i = 0; i < frame.timeDomainRaw.length; i++) {
+    energy += frame.timeDomainRaw[i] * frame.timeDomainRaw[i];
+  }
+  if (energy > 1e-8) {
+    const pre = new Float32Array(frame.timeDomainRaw.length);
+    pre[0] = frame.timeDomainRaw[0] * 0.03;
+    for (let i = 1; i < pre.length; i++) {
+      pre[i] = frame.timeDomainRaw[i] - 0.97 * frame.timeDomainRaw[i - 1];
+    }
+    const burg = solveBurgLPC(pre, 12);
+    computeVocalTractArea(burg.reflectionK, out);
+  }
+  return out;
+}
+
+/** Linearly blend two telemetry frames at morph factor u in [0, 1] (0 = A, 1 = B) for smooth 60 fps 3D & 2D morphing. */
+export function interpolateTelemetry(
+  a: DSPFrameTelemetry,
+  b: DSPFrameTelemetry,
+  areaA: Float32Array,
+  areaB: Float32Array,
+  u: number,
+  targetVowelId: string,
+  out: DSPFrameTelemetry,
+): DSPFrameTelemetry {
+  const k = Math.max(0, Math.min(1, u));
+  const inv = 1 - k;
+  out.sampleRate = b.sampleRate || a.sampleRate;
+  out.analysisRate = b.analysisRate || a.analysisRate || 12000;
+  out.vtlScale = b.vtlScale || a.vtlScale || 1;
+  out.formants.f1 = a.formants.f1 * inv + b.formants.f1 * k;
+  out.formants.f2 = a.formants.f2 * inv + b.formants.f2 * k;
+  out.formants.f3 = a.formants.f3 * inv + b.formants.f3 * k;
+  out.formants.b1 = a.formants.b1 * inv + b.formants.b1 * k;
+  out.formants.b2 = a.formants.b2 * inv + b.formants.b2 * k;
+  out.formants.b3 = a.formants.b3 * inv + b.formants.b3 * k;
+  out.voiced = (a.voiced || b.voiced) && out.formants.f1 > 80 && out.formants.f2 > 200;
+  out.formants.confidence = out.voiced ? Math.max(a.formants.confidence, b.formants.confidence, 0.85) : 0;
+  out.stability.f0Hz = a.stability.f0Hz * inv + b.stability.f0Hz * k;
+  out.stability.rmsDb = a.stability.rmsDb * inv + b.stability.rmsDb * k;
+  out.stability.pitchConfidence = out.voiced ? 0.9 : 0;
+
+  for (let i = 0; i < out.fftMagnitudeDb.length; i++) {
+    out.fftMagnitudeDb[i] = (a.fftMagnitudeDb[i] ?? -120) * inv + (b.fftMagnitudeDb[i] ?? -120) * k;
+    out.lpcEnvelopeDb[i] = (a.lpcEnvelopeDb[i] ?? -120) * inv + (b.lpcEnvelopeDb[i] ?? -120) * k;
+  }
+  for (let i = 0; i < out.vocalTractArea.length; i++) {
+    out.vocalTractArea[i] = (areaA[i] ?? 0.5) * inv + (areaB[i] ?? 0.5) * k;
+  }
+  extractTopSpectralPeaks(out.fftMagnitudeDb, out.analysisRate, out.regime.topPeaks);
+  evaluateTargetConvergence(out.formants, findVowel(targetVowelId), out.activeTargetMatch, out.vtlScale);
+  return out;
+}
+
 interface MetricSnapshot {
   f0Hz: number;
   f1: number;
@@ -93,10 +187,6 @@ function snapshotFromTelemetry(t: DSPFrameTelemetry, targetVowelId?: string | nu
   };
 }
 
-/**
- * Live 10 Hz DOM-ref comparison delta strip used when Slot B is Live Microphone or Built-in Synth,
- * ensuring zero React re-renders per audio frame while tracking changes against Pinned Reference A.
- */
 function LiveSlotBDeltaStrip({
   refA,
   targetVowelId,
@@ -107,8 +197,6 @@ function LiveSlotBDeltaStrip({
   const f0Ref = useRef<HTMLSpanElement>(null);
   const f1Ref = useRef<HTMLSpanElement>(null);
   const f2Ref = useRef<HTMLSpanElement>(null);
-  const f3Ref = useRef<HTMLSpanElement>(null);
-  const barkRef = useRef<HTMLSpanElement>(null);
   const scoreRef = useRef<HTMLSpanElement>(null);
   const vowelRef = useRef<HTMLSpanElement>(null);
 
@@ -129,35 +217,33 @@ function LiveSlotBDeltaStrip({
       setCell(f0Ref.current, b.f0Hz, refA?.f0Hz, " Hz");
       setCell(f1Ref.current, b.f1, refA?.f1, " Hz");
       setCell(f2Ref.current, b.f2, refA?.f2, " Hz");
-      setCell(f3Ref.current, b.f3, refA?.f3, " Hz");
-      setCell(barkRef.current, b.bark, refA?.bark, " Bark", 2);
-      setCell(scoreRef.current, b.score, refA?.score, " / 100");
+      setCell(scoreRef.current, b.score, refA?.score, "%");
       if (vowelRef.current) {
         if (t.voiced && t.formants.f1 > 0 && t.formants.f2 > 0) {
           const detected = nearestVowel(t.formants.f1, t.formants.f2);
-          vowelRef.current.textContent = `${vowelGlyph(detected)} /${detected.symbol}/`;
+          vowelRef.current.textContent = detected.banglaSymbol
+            ? `${detected.banglaSymbol} /${detected.symbol}/`
+            : `/${detected.symbol}/`;
         } else {
           const tgt = findVowel(targetVowelId);
-          vowelRef.current.textContent = `Waiting (${vowelGlyph(tgt)} /${tgt.symbol}/)`;
+          vowelRef.current.textContent = `Listening (target /${tgt.symbol}/)`;
         }
       }
     });
   }, [refA, targetVowelId]);
 
   return (
-    <div data-ui className="grid grid-cols-2 gap-px border-b border-line bg-line sm:grid-cols-4 lg:grid-cols-7">
+    <div data-ui className="grid grid-cols-2 gap-px bg-line sm:grid-cols-5">
       {[
         { label: "Live F0", ref: f0Ref },
         { label: "Live F1", ref: f1Ref },
         { label: "Live F2", ref: f2Ref },
-        { label: "Live F3", ref: f3Ref },
-        { label: "Bark", ref: barkRef },
         { label: "Match", ref: scoreRef },
         { label: "Detected", ref: vowelRef },
       ].map((item) => (
-        <div key={item.label} className="bg-surface px-3 py-2">
+        <div key={item.label} className="bg-surface px-3.5 py-2.5">
           <div className="ui-label text-[11px]">{item.label}</div>
-          <span ref={item.ref} className="ui-fig mt-0.5 block text-[13px] font-medium text-ink">
+          <span ref={item.ref} className="ui-fig mt-0.5 block text-[13.5px] font-medium text-ink">
             —
           </span>
         </div>
@@ -191,7 +277,7 @@ function TakeCard({
 }: TakeCardProps) {
   const [title, setTitle] = useState(take.title);
   const [notes, setNotes] = useState(take.notes);
-  const [expanded, setExpanded] = useState(isA || isB);
+  const [expanded, setExpanded] = useState(false);
   const [saveHint, setSaveHint] = useState<string | null>(null);
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -214,30 +300,26 @@ function TakeCard({
 
   return (
     <article
-      className={`ui-panel flex flex-col transition-colors ${
-        isA && isB
-          ? "border-accent"
-          : isA
-            ? "border-lpc"
-            : isB
-              ? "border-ink"
-              : "border-line"
-      }`}
+      className={`ui-panel flex flex-col transition-[border-color,transform,background-color] duration-200 ease-(--ease-out) ${isA && isB
+        ? "border-accent"
+        : isA
+          ? "border-lpc"
+          : isB
+            ? "border-accent/80"
+            : "border-line hover:border-control"
+        }`}
     >
-      <div className="flex items-start justify-between gap-2 border-b border-line bg-raised/60 px-3 py-2.5">
+      <div className="flex items-start justify-between gap-2.5 px-3.5 pt-3 pb-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-            <span className="rounded bg-surface px-1.5 py-0.5 font-semibold tracking-wide text-muted uppercase">
+            <span className="rounded bg-raised px-1.5 py-0.5 font-semibold tracking-wide text-muted uppercase">
               {take.sourceType}
             </span>
-            {isA && (
-              <span className="rounded bg-lpc px-1.5 py-0.5 font-semibold text-bg">REF A (GHOST)</span>
-            )}
-            {isB && (
-              <span className="rounded bg-accent px-1.5 py-0.5 font-semibold text-accent-ink">ACTIVE B</span>
-            )}
-            <span className="ui-fig text-muted">{take.durationSec.toFixed(1)}s</span>
-            <span className="text-muted">· {formatTimeStamp(take.createdAt)}</span>
+            {isA && <span className="rounded bg-lpc px-1.5 py-0.5 font-semibold text-bg">REF A</span>}
+            {isB && <span className="rounded bg-accent px-1.5 py-0.5 font-semibold text-accent-ink">TAKE B</span>}
+            <span className="ui-fig text-muted">
+              {take.durationSec.toFixed(1)}s · {formatTimeStamp(take.createdAt)}
+            </span>
           </div>
           <input
             type="text"
@@ -248,71 +330,53 @@ function TakeCard({
               if (dirty) void commitNotes();
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.currentTarget.blur();
-              }
+              if (e.key === "Enter") e.currentTarget.blur();
             }}
-            className="mt-1.5 w-full rounded-(--radius-sm) border border-transparent bg-transparent px-1 py-0.5 text-[14px] font-semibold text-ink transition-colors hover:border-line focus:border-accent focus:bg-surface focus:outline-none"
+            className="mt-1 w-full rounded-(--radius-sm) border border-transparent bg-transparent px-1 py-0.5 text-[14px] font-semibold text-ink transition-colors hover:border-line focus:border-accent focus:bg-raised focus:outline-none"
           />
+          <p className="ui-fig mt-0.5 px-1 text-[12px] text-muted">
+            F0 {take.summary.f0Hz > 0 ? Math.round(take.summary.f0Hz) : "—"} · F1{" "}
+            {take.summary.f1Hz > 0 ? take.summary.f1Hz : "—"} · F2{" "}
+            {take.summary.f2Hz > 0 ? take.summary.f2Hz : "—"} Hz
+          </p>
         </div>
-        <div className="flex shrink-0 flex-col items-end">
+
+        <div className="flex shrink-0 flex-col items-end pr-0.5">
           <span lang={vowelObj.banglaSymbol ? "bn" : undefined} className="bn text-[22px] leading-none text-ink">
             {vowelGlyph(vowelObj)}
           </span>
-          <span className="ui-fig mt-0.5 text-[11px] text-muted">/{vowelObj.symbol}/</span>
+          {vowelObj.banglaSymbol && <span className="ui-fig mt-0.5 text-[11px] text-muted">/{vowelObj.symbol}/</span>}
         </div>
       </div>
 
-      {/* Measured summary row */}
-      <dl className="grid grid-cols-4 divide-x divide-line border-b border-line bg-surface text-[12px]">
-        <div className="px-2.5 py-1.5">
-          <dt className="ui-label text-[10px]">F0</dt>
-          <dd className="ui-fig text-ink">{take.summary.f0Hz > 0 ? `${Math.round(take.summary.f0Hz)} Hz` : "—"}</dd>
-        </div>
-        <div className="px-2.5 py-1.5">
-          <dt className="ui-label text-[10px]">F1</dt>
-          <dd className="ui-fig text-ink">{take.summary.f1Hz > 0 ? `${take.summary.f1Hz} Hz` : "—"}</dd>
-        </div>
-        <div className="px-2.5 py-1.5">
-          <dt className="ui-label text-[10px]">F2</dt>
-          <dd className="ui-fig text-ink">{take.summary.f2Hz > 0 ? `${take.summary.f2Hz} Hz` : "—"}</dd>
-        </div>
-        <div className="px-2.5 py-1.5">
-          <dt className="ui-label text-[10px]">Match</dt>
-          <dd className="ui-fig text-ink">{Math.round(take.summary.convergenceScore)}%</dd>
-        </div>
-      </dl>
-
-      {/* Compare & Audio Actions */}
-      <div className="flex flex-wrap items-center gap-1.5 px-3 py-2">
+      {/* Compact Action Strip */}
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-line bg-raised/30 px-3 py-2">
         <button
           type="button"
           onClick={() => onPinA(take)}
           aria-pressed={isA}
-          className={`rounded-(--radius-sm) border px-2.5 py-1 text-[12px] font-medium transition-colors ${
-            isA
-              ? "border-lpc bg-lpc text-bg font-semibold"
-              : "border-line bg-raised text-ink hover:border-lpc"
-          }`}
+          className={`rounded-(--radius-sm) border px-2.5 py-1 text-[12px] font-medium transition-all duration-150 ${isA
+            ? "border-lpc bg-lpc text-bg font-semibold"
+            : "border-line bg-surface text-ink hover:border-lpc"
+            }`}
         >
-          {isA ? "✓ Pinned A" : "Pin as A"}
+          {isA ? "✓ Ref A" : "Set A"}
         </button>
         <button
           type="button"
           onClick={() => onLoadB(take)}
           aria-pressed={isB}
-          className={`rounded-(--radius-sm) border px-2.5 py-1 text-[12px] font-medium transition-colors ${
-            isB
-              ? "border-accent bg-accent text-accent-ink font-semibold"
-              : "border-line bg-raised text-ink hover:border-accent"
-          }`}
+          className={`rounded-(--radius-sm) border px-2.5 py-1 text-[12px] font-medium transition-all duration-150 ${isB
+            ? "border-accent bg-accent text-accent-ink font-semibold"
+            : "border-line bg-surface text-ink hover:border-accent"
+            }`}
         >
-          {isB ? "✓ Active B" : "Load as B"}
+          {isB ? "✓ Take B" : "Set B"}
         </button>
         <button
           type="button"
           onClick={() => onPlayToggle(take)}
-          className="rounded-(--radius-sm) border border-line bg-surface px-2.5 py-1 text-[12px] font-medium text-ink hover:border-ink"
+          className="rounded-(--radius-sm) border border-line bg-surface px-2.5 py-1 text-[12px] font-medium text-ink transition-colors hover:border-ink"
         >
           {isPlaying ? "■ Stop" : "▶ Play"}
         </button>
@@ -320,82 +384,80 @@ function TakeCard({
           type="button"
           aria-expanded={expanded}
           onClick={() => setExpanded((prev) => !prev)}
-          className="ml-auto rounded-(--radius-sm) px-2 py-1 text-[12px] font-medium text-muted hover:text-ink"
+          className="ml-auto rounded-(--radius-sm) px-2 py-1 text-[12px] font-medium text-muted transition-colors hover:text-ink"
         >
-          {expanded ? "Hide notes" : notes.trim() ? "Notes ●" : "Add notes"}
+          {expanded ? "Close ▲" : notes.trim() ? "Notes ●" : "Notes ▾"}
         </button>
       </div>
 
-      {expanded && (
-        <div className="border-t border-line bg-raised/35 px-3 py-2.5">
-          <div className="mb-1.5 flex items-center justify-between text-[11px] text-muted">
-            <label htmlFor={`note-${take.id}`}>Lab &amp; pronunciation notes</label>
-            <span className="ui-fig text-lock">{dirty ? "Unsaved edits" : saveHint ?? "IndexedDB synced"}</span>
-          </div>
-          <textarea
-            id={`note-${take.id}`}
-            rows={3}
-            placeholder="Write observations (e.g. lowered jaw — F1 shifted closer to target)..."
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            onBlur={() => {
-              if (dirty) void commitNotes();
-            }}
-            className="w-full resize-y rounded-(--radius-sm) border border-line bg-surface p-2 text-[13px] text-ink placeholder:text-muted focus:border-accent focus:outline-none"
-          />
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-1.5">
+      {/* Smooth Animated Accordion Drawer for Notes & Export */}
+      <div className="drawer-grid" data-open={expanded}>
+        <div className="drawer-inner">
+          <div className="border-t border-line bg-raised/45 px-3.5 py-3">
+            <div className="mb-1.5 flex items-center justify-between text-[11px] text-muted">
+              <label htmlFor={`note-${take.id}`}>Observation notes</label>
+              <span className="ui-fig text-lock">{dirty ? "Unsaved" : saveHint ?? "Synced"}</span>
+            </div>
+            <textarea
+              id={`note-${take.id}`}
+              rows={2}
+              placeholder="Write observations (e.g. lowered jaw — F1 shifted closer to target)..."
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              onBlur={() => {
+                if (dirty) void commitNotes();
+              }}
+              className="w-full resize-y rounded-(--radius-sm) border border-line bg-surface p-2 text-[13px] text-ink placeholder:text-muted focus:border-accent focus:outline-none"
+            />
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    downloadBlob(
+                      new Blob([new Uint8Array(take.wavBytes)], { type: "audio/wav" }),
+                      `${slugify(title)}.wav`,
+                    )
+                  }
+                  className="rounded-(--radius-sm) border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink hover:border-ink"
+                >
+                  ⬇ .WAV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const committedTitle = title.trim() || take.title;
+                    if (dirty) void commitNotes();
+                    downloadBlob(
+                      new Blob([exportTakeBundleJson({ ...take, title: committedTitle, notes })], {
+                        type: "application/json",
+                      }),
+                      `${slugify(committedTitle)}.spondon.json`,
+                    );
+                  }}
+                  className="rounded-(--radius-sm) border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink hover:border-ink"
+                >
+                  Export .json
+                </button>
+              </div>
               <button
                 type="button"
-                onClick={() => downloadBlob(new Blob([new Uint8Array(take.wavBytes)], { type: "audio/wav" }), `${slugify(title)}.wav`)}
-                className="rounded-(--radius-sm) border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink hover:border-ink"
+                onClick={() => onDelete(take.id)}
+                className="rounded-(--radius-sm) px-2 py-1 text-[11px] font-medium text-muted hover:text-accent"
               >
-                ⬇ .WAV
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const committedTitle = title.trim() || take.title;
-                  if (dirty) void commitNotes();
-                  downloadBlob(
-                    new Blob([exportTakeBundleJson({ ...take, title: committedTitle, notes })], {
-                      type: "application/json",
-                    }),
-                    `${slugify(committedTitle)}.spondon.json`,
-                  );
-                }}
-                className="rounded-(--radius-sm) border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink hover:border-ink"
-              >
-                Export .json
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void commitNotes();
-                }}
-                disabled={!dirty}
-                className="rounded-(--radius-sm) border border-line bg-surface px-2 py-1 text-[11px] font-medium text-accent disabled:opacity-40"
-              >
-                Save note
+                Delete
               </button>
             </div>
-            <button
-              type="button"
-              onClick={() => onDelete(take.id)}
-              className="rounded-(--radius-sm) px-2 py-1 text-[11px] font-medium text-muted hover:text-accent"
-            >
-              Delete
-            </button>
           </div>
         </div>
-      )}
+      </div>
     </article>
   );
 }
 
 /**
- * Dedicated local-first Takes Vault, Audio File Uploader, Notes & A/B Acoustic Comparison Studio.
- * Keeps 100% of audio, recordings, and notes in the visitor's own IndexedDB database.
+ * Uncluttered Local-First Takes Studio with Custom Animated Dropdowns and a Real-Time
+ * 60 fps 3D A <-> B Acoustic Morphing Stage.
  */
 export function CompareWorkspace() {
   const [takes, setTakes] = useState<SavedTake[]>([]);
@@ -407,22 +469,30 @@ export function CompareWorkspace() {
   const [takeAId, setTakeAId] = useState<string | null>(null);
   const [takeBId, setTakeBId] = useState<string | null>(null);
   const [slotBMode, setSlotBMode] = useState<SlotBMode>("saved");
+  const [compareTab, setCompareTab] = useState<CompareTab>("morph3d");
 
   const [scrubASec, setScrubASec] = useState<number | null>(null);
   const [scrubBSec, setScrubBSec] = useState<number | null>(null);
 
-  const [recDuration, setRecDuration] = useState<(typeof REC_DURATIONS)[number]>(5);
+  const [recDurationStr, setRecDurationStr] = useState<string>("5");
+  const recDuration = Number(recDurationStr) || 5;
   const [targetVowelChoice, setTargetVowelChoice] = useState<string>("auto");
   const [synthVowelChoice, setSynthVowelChoice] = useState<string>("aa");
   const [filterSource, setFilterSource] = useState<SourceFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [dragOver, setDragOver] = useState(false);
 
+  // 3D Morphing state (0 = 100% Take A, 1 = 100% Take B)
+  const [autoMorph, setAutoMorph] = useState(true);
+  const [morphMix, setMorphMix] = useState(1);
+  const [compareShape, setCompareShape] = useState<ShapeModel>("square");
+
   const [playingTakeId, setPlayingTakeId] = useState<string | null>(null);
   const [sequencePlaying, setSequencePlaying] = useState(false);
 
   const isRecordingClip = useLabStore((s) => s.isRecordingClip);
   const recordingProgress = useLabStore((s) => s.recordingProgress);
+  const excitePlate = useLabStore((s) => s.excitePlate);
 
   const audioInputRef = useRef<HTMLInputElement>(null);
   const bundleInputRef = useRef<HTMLInputElement>(null);
@@ -463,7 +533,7 @@ export function CompareWorkspace() {
     };
   }, []);
 
-  // Drive recording VU bar via DOM ref without triggering React re-renders
+  // Live VU meter during recording
   useEffect(() => {
     if (!isRecordingClip) return;
     return labRuntime.subscribe(() => {
@@ -594,7 +664,7 @@ export function CompareWorkspace() {
         );
       }
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "Could not decode uploaded audio file.");
+      setErrorMsg(err instanceof Error ? err.message : "Could not decode or analyze audio file.");
     } finally {
       setBusyMessage(null);
     }
@@ -677,8 +747,7 @@ export function CompareWorkspace() {
   };
 
   const handleStopRecordingEarly = () => {
-    const ctrl = labRuntime.getController();
-    ctrl?.stopRecordingClip();
+    labRuntime.getController()?.stopRecordingClip();
   };
 
   const handleSaveSynthReference = async (vowelId: string) => {
@@ -695,7 +764,7 @@ export function CompareWorkspace() {
         seed: 7,
       });
       const take = await ingestAudioFileOrBuffer({ pcm, sampleRate: 48000 }, v.id, {
-        title: `Studio reference · ${vowelGlyph(v)} /${v.symbol}/`,
+        title: `Reference · ${v.banglaSymbol ? `${v.banglaSymbol} /${v.symbol}/` : `/${v.symbol}/`}`,
         notes: `Built-in source-filter reference: F1 ${v.targetF1} Hz, F2 ${v.targetF2} Hz, F3 ${v.targetF3} Hz.`,
         sourceType: "synth",
       });
@@ -731,26 +800,27 @@ export function CompareWorkspace() {
         jitterPercent: 0.35,
         seed: 11,
       });
-      const takeA = await ingestAudioFileOrBuffer({ pcm: pcmA, sampleRate: 48000 }, aa.id, {
-        title: `Sample Reference A · ${vowelGlyph(aa)} /${aa.symbol}/`,
+      const createdA = await ingestAudioFileOrBuffer({ pcm: pcmA, sampleRate: 48000 }, aa.id, {
+        title: `Reference A · ${aa.banglaSymbol} /${aa.symbol}/`,
         notes: "Open low-back vowel baseline (high F1 ~750 Hz, low F2 ~1180 Hz).",
         sourceType: "synth",
       });
-      const takeB = await ingestAudioFileOrBuffer({ pcm: pcmB, sampleRate: 48000 }, ii.id, {
-        title: `Sample Take B · ${vowelGlyph(ii)} /${ii.symbol}/`,
-        notes: "High-front vowel comparison (low F1 ~310 Hz, high F2 ~2320 Hz).",
+      const createdB = await ingestAudioFileOrBuffer({ pcm: pcmB, sampleRate: 48000 }, ii.id, {
+        title: `Take B · ${ii.banglaSymbol} /${ii.symbol}/`,
+        notes: "High-front vowel comparison (low F1 ~280 Hz, high F2 ~2280 Hz).",
         sourceType: "synth",
       });
-      await saveTake(takeA);
-      await saveTake(takeB);
+      await saveTake(createdA);
+      await saveTake(createdB);
       const items = await listTakes();
       setTakes(items);
-      setTakeAId(takeA.id);
-      setTakeBId(takeB.id);
+      setTakeAId(createdA.id);
+      setTakeBId(createdB.id);
       setSlotBMode("saved");
+      setAutoMorph(true);
       setScrubASec(null);
       setScrubBSec(null);
-      setStatusMsg("Created /aa/ vs /ii/ synthetic starter pair in IndexedDB.");
+      setStatusMsg("Created /aa/ vs /ii/ starter pair — watch the 3D stage morph between A and B.");
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "Could not create starter pair.");
     } finally {
@@ -812,14 +882,16 @@ export function CompareWorkspace() {
 
   const frameA = useMemo<DSPFrameTelemetry | null>(() => {
     if (!takeA) return null;
-    if (scrubASec !== null) return analyzeTakeAtTime(takeA, scrubASec);
-    return telemetryFromSavedTake(takeA);
+    const f = scrubASec !== null ? analyzeTakeAtTime(takeA, scrubASec) : telemetryFromSavedTake(takeA);
+    f.vocalTractArea.set(deriveTractAreaForFrame(f));
+    return f;
   }, [takeA, scrubASec]);
 
   const frameB = useMemo<DSPFrameTelemetry | null>(() => {
     if (slotBMode !== "saved" || !takeB) return null;
-    if (scrubBSec !== null) return analyzeTakeAtTime(takeB, scrubBSec);
-    return telemetryFromSavedTake(takeB);
+    const f = scrubBSec !== null ? analyzeTakeAtTime(takeB, scrubBSec) : telemetryFromSavedTake(takeB);
+    f.vocalTractArea.set(deriveTractAreaForFrame(f));
+    return f;
   }, [slotBMode, takeB, scrubBSec]);
 
   const activeTargetVowel =
@@ -827,6 +899,40 @@ export function CompareWorkspace() {
     takeA?.targetVowel ??
     takeA?.summary.nearestVowel ??
     "aa";
+
+  // Smooth rAF oscillation driving morphMix (0 <-> 1) when Auto-morph is enabled
+  useEffect(() => {
+    if (!autoMorph || slotBMode !== "saved" || !frameA || !frameB) return;
+    let raf = 0;
+    const start = performance.now();
+    let lastStatePush = 0;
+    const tick = (now: number) => {
+      const elapsed = (now - start) / 1000;
+      const u = 0.5 - 0.5 * Math.cos(elapsed * 1.65);
+      if (now - lastStatePush >= 32) {
+        lastStatePush = now;
+        setMorphMix(Number(u.toFixed(3)));
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [autoMorph, slotBMode, frameA, frameB]);
+
+  const morphedFrame = useMemo<DSPFrameTelemetry | null>(() => {
+    if (slotBMode !== "saved") return null;
+    if (!frameA || !frameB || !takeB) return frameB ?? frameA ?? null;
+    const base = telemetryFromSavedTake(takeB);
+    return interpolateTelemetry(
+      frameA,
+      frameB,
+      frameA.vocalTractArea,
+      frameB.vocalTractArea,
+      morphMix,
+      activeTargetVowel,
+      base,
+    );
+  }, [slotBMode, frameA, frameB, takeB, morphMix, activeTargetVowel]);
 
   const metricsA = useMemo<MetricSnapshot | null>(() => {
     if (!takeA) return null;
@@ -894,198 +1000,143 @@ export function CompareWorkspace() {
     }
   };
 
+  const stageTelemetryFor3D = slotBMode === "saved" ? (morphedFrame ?? frameB ?? frameA) : null;
+
   return (
-    <main id="content" className="wrap min-h-svh pt-(--nav-h) pb-12 text-[14px] leading-[1.4]">
-      {/* Page Header */}
-      <header className="flex flex-wrap items-end justify-between gap-6 border-b border-line py-5">
-        <div className="max-w-[64ch]">
+    <main id="content" className="wrap min-h-svh pt-(--nav-h) pb-14 text-[14px] leading-[1.4]">
+      {/* Clean Spacious Page Header */}
+      <header className="flex flex-wrap items-end justify-between gap-6 py-5">
+        <div>
           <p className="ui-label flex items-center gap-2 text-[12px]">
             <Prov kind="measured">Local IndexedDB vault · zero server uploads</Prov>
           </p>
-          <h1 className="mt-1.5 text-[28px] leading-tight font-semibold tracking-[-0.025em] text-ink">
-            Takes, notes &amp; A/B compare
+          <h1 className="mt-1 text-[28px] leading-tight font-semibold tracking-[-0.025em] text-ink">
+            Compare &amp; Morph Takes
           </h1>
-          <p className="mt-1.5 text-[15px] text-muted">
-            Record voice notes, drop in any audio file, annotate observations, and overlay Reference A against Take B
-            or your live microphone without cluttering the live lab.
-          </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <Link href="/lab" className="btn btn-quiet btn-sm">
-            Open live lab
-          </Link>
+        {/* Streamlined Capture & Ingest Bar */}
+        <div
+          aria-label="Capture or import audio takes"
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            if (e.dataTransfer.files.length > 0) void handleUploadFiles(e.dataTransfer.files);
+          }}
+          className={`flex flex-wrap items-center gap-2.5 rounded-(--radius) border p-2 transition-colors ${dragOver ? "border-accent bg-raised" : "border-line bg-surface"
+            }`}
+        >
+          <InstrumentSelect
+            ariaLabel="Target vowel"
+            size="sm"
+            value={targetVowelChoice}
+            options={TARGET_VOWEL_OPTIONS}
+            onChange={setTargetVowelChoice}
+            className="w-[215px]"
+            menuWidthClass="w-[280px]"
+          />
+
+          <InstrumentSelect
+            ariaLabel="Recording duration"
+            size="sm"
+            value={recDurationStr}
+            options={REC_DURATION_OPTIONS}
+            onChange={setRecDurationStr}
+            disabled={isRecordingClip}
+            className="w-[100px]"
+            menuWidthClass="w-[180px]"
+          />
+
+          {!isRecordingClip ? (
+            <button
+              type="button"
+              onClick={() => void handleStartRecording()}
+              disabled={Boolean(busyMessage)}
+              className="btn btn-sm"
+            >
+              ● Record
+            </button>
+          ) : (
+            <button type="button" onClick={handleStopRecordingEarly} className="btn btn-sm animate-pulse">
+              ■ Stop ({(recordingProgress * recDuration).toFixed(1)}s)
+            </button>
+          )}
+
+          <input
+            ref={audioInputRef}
+            type="file"
+            accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.aac,.flac"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files) void handleUploadFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            disabled={Boolean(busyMessage)}
+            onClick={() => audioInputRef.current?.click()}
+            className="btn btn-quiet btn-sm"
+          >
+            ↑ Upload audio
+          </button>
+
+          <div className="flex items-center gap-1.5 border-l border-line pl-2">
+            <InstrumentSelect
+              ariaLabel="Synthetic reference vowel"
+              size="sm"
+              align="right"
+              value={synthVowelChoice}
+              options={SYNTH_REF_OPTIONS}
+              onChange={setSynthVowelChoice}
+              className="w-[155px]"
+              menuWidthClass="w-[240px]"
+            />
+            <button
+              type="button"
+              disabled={Boolean(busyMessage)}
+              onClick={() => void handleSaveSynthReference(synthVowelChoice)}
+              className="rounded-(--radius-sm) border border-line bg-raised px-2.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-accent"
+            >
+              + Add
+            </button>
+          </div>
         </div>
       </header>
 
-      {/* Capture & Ingest Toolbar */}
-      <section
-        aria-label="Capture or import audio takes"
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOver(false);
-          if (e.dataTransfer.files.length > 0) {
-            void handleUploadFiles(e.dataTransfer.files);
-          }
-        }}
-        className={`ui-panel mt-4 p-3.5 transition-colors ${
-          dragOver ? "border-accent bg-raised" : "border-line bg-surface"
-        }`}
-      >
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          {/* Mic Recorder Group */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div role="group" aria-label="Max recording duration" className="seg">
-              {REC_DURATIONS.map((sec) => (
-                <button
-                  key={sec}
-                  type="button"
-                  disabled={isRecordingClip}
-                  aria-pressed={recDuration === sec}
-                  onClick={() => setRecDuration(sec)}
-                >
-                  {sec}s
-                </button>
-              ))}
+      {/* Live recording meter or status toast */}
+      {(isRecordingClip || busyMessage || statusMsg || errorMsg || dragOver) && (
+        <div className="ui-panel mb-4 px-4 py-2.5 text-[12.5px]">
+          {isRecordingClip && (
+            <div className="flex items-center gap-3">
+              <span className="font-semibold text-accent">● RECORDING</span>
+              <div className="relative h-2.5 flex-1 overflow-hidden rounded-(--radius-sm) border border-line bg-raised">
+                <div ref={liveVuRef} className="h-full w-[4%] bg-accent transition-[width] duration-75" />
+              </div>
+              <span className="ui-fig text-muted">{Math.round(recordingProgress * 100)}%</span>
             </div>
-
-            {!isRecordingClip ? (
-              <button
-                type="button"
-                onClick={() => void handleStartRecording()}
-                disabled={Boolean(busyMessage)}
-                className="btn btn-sm"
-              >
-                ● Record mic ({recDuration}s)
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleStopRecordingEarly}
-                className="btn btn-sm animate-pulse"
-              >
-                ■ Stop &amp; save ({(recordingProgress * recDuration).toFixed(1)}s)
-              </button>
-            )}
-          </div>
-
-          {/* File Upload, Target Selection & Portable Bundle Import */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <label className="flex items-center gap-2 text-[12px] text-muted">
-              <span>Target:</span>
-              <select
-                value={targetVowelChoice}
-                onChange={(e) => setTargetVowelChoice(e.target.value)}
-                className="h-9 rounded-(--radius-sm) border border-line bg-raised px-2.5 text-[13px] text-ink"
-              >
-                <option value="auto">Auto-detect vowel</option>
-                {VOWEL_TARGETS.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {vowelGlyph(v)} /{v.symbol}/ ({v.label})
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <input
-              ref={audioInputRef}
-              type="file"
-              accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.aac,.flac"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) void handleUploadFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <button
-              type="button"
-              disabled={Boolean(busyMessage)}
-              onClick={() => audioInputRef.current?.click()}
-              className="btn btn-quiet btn-sm"
-            >
-              ↑ Upload audio file
-            </button>
-
-            <div className="flex items-center gap-1">
-              <select
-                aria-label="Synthetic reference vowel"
-                value={synthVowelChoice}
-                onChange={(e) => setSynthVowelChoice(e.target.value)}
-                className="h-9 rounded-(--radius-sm) border border-line bg-raised px-2 text-[13px] text-ink"
-              >
-                {VOWEL_TARGETS.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    Synth {vowelGlyph(v)} /{v.symbol}/
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={Boolean(busyMessage)}
-                onClick={() => void handleSaveSynthReference(synthVowelChoice)}
-                className="btn btn-quiet btn-sm"
-              >
-                + Save synth
-              </button>
-            </div>
-
-            <input
-              ref={bundleInputRef}
-              type="file"
-              accept=".json,.spondon.json,application/json"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                void handleImportBundles(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <button
-              type="button"
-              disabled={Boolean(busyMessage)}
-              onClick={() => bundleInputRef.current?.click()}
-              className="ui-tab min-h-9 px-2 text-[13px] font-medium"
-            >
-              ⇄ Import .spondon.json
-            </button>
-          </div>
+          )}
+          {dragOver && <p className="font-medium text-accent">Drop audio files (.wav, .mp3, .m4a, .ogg, .webm) to analyze locally…</p>}
+          {busyMessage && <p className="text-ink">{busyMessage}</p>}
+          {statusMsg && !busyMessage && <p className="text-lock">{statusMsg}</p>}
+          {errorMsg && (
+            <p role="alert" className="text-accent">
+              {errorMsg}
+            </p>
+          )}
         </div>
+      )}
 
-        {/* Live recording meter */}
-        {isRecordingClip && (
-          <div className="mt-3 flex items-center gap-3 border-t border-line pt-2.5 text-[12px]">
-            <span className="font-semibold text-accent">RECORDING</span>
-            <div className="relative h-2.5 flex-1 overflow-hidden rounded-(--radius-sm) border border-line bg-raised">
-              <div ref={liveVuRef} className="h-full w-[4%] bg-accent transition-[width] duration-75" />
-            </div>
-            <span className="ui-fig text-muted">{Math.round(recordingProgress * 100)}%</span>
-          </div>
-        )}
-
-        {(busyMessage || statusMsg || errorMsg || dragOver) && (
-          <div className="mt-2.5 border-t border-line pt-2 text-[12px]">
-            {dragOver && <p className="font-medium text-accent">Drop audio files (.wav, .mp3, .m4a, .ogg, .webm) to analyze locally…</p>}
-            {busyMessage && <p className="text-ink">{busyMessage}</p>}
-            {statusMsg && !busyMessage && <p className="text-lock">{statusMsg}</p>}
-            {errorMsg && (
-              <p role="alert" className="text-accent">
-                {errorMsg}
-              </p>
-            )}
-          </div>
-        )}
-      </section>
-
-      {/* Main Split Studio */}
-      <div className="mt-4 grid grid-cols-12 gap-4 items-start">
-        {/* LEFT COLUMN: Saved Takes & Notes Library */}
-        <section aria-label="Saved takes and notes" className="col-span-12 flex flex-col gap-3 lg:col-span-5">
+      {/* Clean Two-Column Studio */}
+      <div className="grid grid-cols-12 items-start gap-5">
+        {/* LEFT SIDEBAR (4 cols): Saved Takes Vault */}
+        <section aria-label="Saved takes and notes" className="col-span-12 flex flex-col gap-3 lg:col-span-4">
           <div className="ui-panel p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div role="tablist" aria-label="Filter takes by source" className="seg">
@@ -1101,27 +1152,50 @@ export function CompareWorkspace() {
                   </button>
                 ))}
               </div>
+
+              <input
+                ref={bundleInputRef}
+                type="file"
+                accept=".json,.spondon.json,application/json"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  void handleImportBundles(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                disabled={Boolean(busyMessage)}
+                onClick={() => bundleInputRef.current?.click()}
+                className="text-[12px] font-medium text-muted transition-colors hover:text-ink"
+              >
+                Import .json
+              </button>
+            </div>
+
+            {takes.length > 2 && (
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Filter notes or title…"
-                className="h-9 min-w-[140px] flex-1 rounded-(--radius-sm) border border-line bg-raised px-2.5 text-[13px] text-ink placeholder:text-muted focus:border-accent focus:outline-none"
+                placeholder="Search title or notes…"
+                className="mt-2.5 h-9 w-full rounded-(--radius-sm) border border-line bg-raised px-3 text-[13px] text-ink placeholder:text-muted focus:border-accent focus:outline-none"
               />
-            </div>
+            )}
           </div>
 
           {loading ? (
             <div className="ui-panel p-6 text-center text-muted">Loading local IndexedDB vault…</div>
           ) : filteredTakes.length === 0 ? (
-            <div className="ui-panel flex flex-col items-start gap-3 p-5">
+            <div className="ui-panel flex flex-col items-start gap-3.5 p-5">
               <h2 className="text-[16px] font-semibold text-ink">
-                {takes.length === 0 ? "Your vault is empty" : "No matching takes"}
+                {takes.length === 0 ? "Start with two takes" : "No matching takes"}
               </h2>
-              <p className="text-[13px] text-muted">
+              <p className="text-[13.5px] leading-relaxed text-muted">
                 {takes.length === 0
-                  ? "Record a microphone clip above, upload any .wav / .mp3 / .m4a file, or generate a synthetic sample pair to start comparing acoustic shifts and pronunciation notes."
-                  : "Clear the search box or switch source filter."}
+                  ? "Record your voice, upload an audio file, or load a synthetic /ɑː/ vs /iː/ pair to see the 3D morphing stage in action."
+                  : "Clear the search filter to see all saved takes."}
               </p>
               {takes.length === 0 && (
                 <button
@@ -1130,12 +1204,12 @@ export function CompareWorkspace() {
                   disabled={Boolean(busyMessage)}
                   className="btn btn-sm"
                 >
-                  Generate /aa/ vs /ii/ starter pair
+                  Load /ɑː/ vs /iː/ 3D starter pair
                 </button>
               )}
             </div>
           ) : (
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-2.5">
               {filteredTakes.map((take) => (
                 <TakeCard
                   key={take.id}
@@ -1161,16 +1235,16 @@ export function CompareWorkspace() {
           )}
         </section>
 
-        {/* RIGHT COLUMN: A vs B Acoustic Comparison Stage */}
-        <section aria-label="A versus B acoustic comparison" className="col-span-12 flex flex-col gap-3 lg:col-span-7">
-          {/* Slot Control Bar */}
-          <div className="ui-panel p-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-3 text-[12px]">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="h-2.5 w-2.5 rounded-full border-2 border-lpc" aria-hidden />
-                  <strong className="text-ink">Reference A (Ghost):</strong>
-                  <span className="text-muted">{takeA ? takeA.title : "None pinned"}</span>
+        {/* RIGHT STAGE (8 cols): Clean Focused Comparison & 3D Morphing Studio */}
+        <section aria-label="A versus B acoustic comparison" className="col-span-12 flex flex-col gap-4 lg:col-span-8">
+          {/* Unified Top Bar: A vs B Assignment + 4-Metric Visual Diff */}
+          <div className="ui-panel overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2.5 text-[13px]">
+                <span className="inline-flex items-center gap-1.5 rounded-(--radius-sm) border border-lpc/40 bg-raised px-2.5 py-1">
+                  <span className="h-2 w-2 rounded-full bg-lpc" aria-hidden />
+                  <span className="font-semibold text-ink">A:</span>
+                  <span className="max-w-[18ch] truncate text-muted">{takeA ? takeA.title : "None"}</span>
                   {takeA && (
                     <button
                       type="button"
@@ -1178,15 +1252,13 @@ export function CompareWorkspace() {
                         setTakeAId(null);
                         setScrubASec(null);
                       }}
-                      className="ml-1 text-muted hover:text-accent"
+                      className="ml-1 text-[11px] text-muted hover:text-accent"
                     >
-                      [Clear]
+                      ✕
                     </button>
                   )}
                 </span>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-muted">→</span>
                 <div role="radiogroup" aria-label="Active B source" className="seg">
                   <button
                     type="button"
@@ -1194,7 +1266,7 @@ export function CompareWorkspace() {
                     aria-checked={slotBMode === "saved"}
                     onClick={() => void handleSwitchSlotBMode("saved")}
                   >
-                    Saved Take B
+                    Saved B
                   </button>
                   <button
                     type="button"
@@ -1203,7 +1275,7 @@ export function CompareWorkspace() {
                     data-hot={slotBMode === "mic"}
                     onClick={() => void handleSwitchSlotBMode("mic")}
                   >
-                    Live Mic (B)
+                    Live Mic
                   </button>
                   <button
                     type="button"
@@ -1211,126 +1283,68 @@ export function CompareWorkspace() {
                     aria-checked={slotBMode === "synth"}
                     onClick={() => void handleSwitchSlotBMode("synth")}
                   >
-                    Live Synth (B)
+                    Live Synth
                   </button>
                 </div>
+              </div>
 
+              <div className="flex items-center gap-2">
                 {takeA && takeB && slotBMode === "saved" && (
-                  <button
-                    type="button"
-                    onClick={() => void handlePlaySequence()}
-                    className="btn btn-quiet btn-sm"
-                  >
+                  <button type="button" onClick={() => void handlePlaySequence()} className="btn btn-quiet btn-sm">
                     {sequencePlaying ? "■ Stop A → B" : "▶ Hear A → B"}
                   </button>
                 )}
+                <Link href="/lab" className="ui-tab px-2 text-[13px] font-medium">
+                  Full lab →
+                </Link>
               </div>
             </div>
 
-            {/* Optional timeline scrubbers when inspecting saved takes */}
-            {((takeA && takeA.durationSec > 0.2) || (slotBMode === "saved" && takeB && takeB.durationSec > 0.2)) && (
-              <div className="mt-3 grid grid-cols-1 gap-3 border-t border-line pt-2.5 sm:grid-cols-2">
-                {takeA && (
-                  <div className="flex items-center gap-2 text-[12px]">
-                    <span className="shrink-0 font-medium text-lpc">Time A</span>
-                    <input
-                      type="range"
-                      min={0.08}
-                      max={takeA.durationSec}
-                      step={0.02}
-                      value={scrubASec ?? takeA.representativeFrame.timestampMs / 1000}
-                      onChange={(e) => setScrubASec(Number(e.target.value))}
-                      className="ui-slider flex-1"
-                    />
-                    <span className="ui-fig w-[9ch] text-right text-muted">
-                      {(scrubASec ?? takeA.representativeFrame.timestampMs / 1000).toFixed(2)}s
-                    </span>
-                    {scrubASec !== null && (
-                      <button
-                        type="button"
-                        onClick={() => setScrubASec(null)}
-                        className="text-[11px] text-lpc hover:underline"
-                      >
-                        Peak
-                      </button>
-                    )}
-                  </div>
-                )}
-                {slotBMode === "saved" && takeB && (
-                  <div className="flex items-center gap-2 text-[12px]">
-                    <span className="shrink-0 font-medium text-accent">Time B</span>
-                    <input
-                      type="range"
-                      min={0.08}
-                      max={takeB.durationSec}
-                      step={0.02}
-                      value={scrubBSec ?? takeB.representativeFrame.timestampMs / 1000}
-                      onChange={(e) => setScrubBSec(Number(e.target.value))}
-                      className="ui-slider flex-1"
-                    />
-                    <span className="ui-fig w-[9ch] text-right text-muted">
-                      {(scrubBSec ?? takeB.representativeFrame.timestampMs / 1000).toFixed(2)}s
-                    </span>
-                    {scrubBSec !== null && (
-                      <button
-                        type="button"
-                        onClick={() => setScrubBSec(null)}
-                        className="text-[11px] text-accent hover:underline"
-                      >
-                        Peak
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Numeric A vs B Delta Scorecard */}
-          <div className="ui-panel overflow-hidden">
-            <div className="flex items-center justify-between border-b border-line bg-raised px-3 py-2 text-[12px]">
-              <span className="font-semibold text-ink">
-                <Prov kind="derived">Measured acoustic diff (A vs B)</Prov>
-              </span>
-              <span className="ui-fig text-muted">
-                {slotBMode === "saved"
-                  ? `${takeA ? takeA.title : "No Ref A"}  vs.  ${takeB ? takeB.title : "No Take B"}`
-                  : `${takeA ? takeA.title : "No Ref A"}  vs.  Live ${slotBMode === "mic" ? "Microphone" : "Synth"}`}
-              </span>
-            </div>
-
+            {/* Clean 4-Metric Diff Row */}
             {slotBMode !== "saved" ? (
               <LiveSlotBDeltaStrip refA={metricsA} targetVowelId={activeTargetVowel} />
             ) : (
-              <div className="grid grid-cols-2 gap-px bg-line sm:grid-cols-4 lg:grid-cols-7">
+              <div className="grid grid-cols-2 gap-px bg-line sm:grid-cols-4">
                 {(
                   [
-                    ["F0", metricsA?.f0Hz ?? 0, metricsB?.f0Hz ?? 0, 0, "Hz"],
-                    ["F1", metricsA?.f1 ?? 0, metricsB?.f1 ?? 0, 0, "Hz"],
-                    ["F2", metricsA?.f2 ?? 0, metricsB?.f2 ?? 0, 0, "Hz"],
-                    ["F3", metricsA?.f3 ?? 0, metricsB?.f3 ?? 0, 0, "Hz"],
-                    ["Bark dist.", metricsA?.bark ?? 0, metricsB?.bark ?? 0, 2, ""],
-                    ["Jitter", metricsA?.jitter ?? 0, metricsB?.jitter ?? 0, 2, "%"],
-                    ["Match", metricsA?.score ?? 0, metricsB?.score ?? 0, 0, "%"],
+                    ["Pitch F0", metricsA?.f0Hz ?? 0, metricsB?.f0Hz ?? 0, 400, "Hz"],
+                    ["Formant F1", metricsA?.f1 ?? 0, metricsB?.f1 ?? 0, 1000, "Hz"],
+                    ["Formant F2", metricsA?.f2 ?? 0, metricsB?.f2 ?? 0, 2800, "Hz"],
+                    ["Target Match", metricsA?.score ?? 0, metricsB?.score ?? 0, 100, "%"],
                   ] as const
-                ).map(([label, aVal, bVal, dec, unit]) => {
-                  const fmt = (v: number) =>
-                    v > 0 ? `${dec > 0 ? v.toFixed(dec) : Math.round(v)}${unit ? ` ${unit}` : ""}` : "—";
-                  const showDelta = aVal > 0 && bVal > 0 && takeA && takeB;
+                ).map(([label, aVal, bVal, scaleMax, unit]) => {
+                  const fmt = (v: number) => (v > 0 ? `${Math.round(v)} ${unit}` : "—");
+                  const pctA = Math.min(100, Math.max(0, (aVal / scaleMax) * 100));
+                  const pctB = Math.min(100, Math.max(0, (bVal / scaleMax) * 100));
+                  const hasBoth = aVal > 0 && bVal > 0 && takeA && takeB;
                   return (
-                    <div key={label} className="bg-surface px-3 py-2">
-                      <div className="ui-label text-[11px]">{label}</div>
-                      <div className="ui-fig mt-0.5 text-[13px] font-semibold text-ink">
-                        {takeB ? fmt(bVal) : "—"}
+                    <div key={label} className="bg-surface px-4 py-3">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="ui-label text-[11.5px]">{label}</span>
+                        {hasBoth && (
+                          <span className="ui-fig text-[11.5px] font-semibold text-accent">
+                            {formatDelta(aVal, bVal, 0, unit)}
+                          </span>
+                        )}
                       </div>
-                      <div className="ui-fig mt-0.5 text-[11px] text-muted">
-                        {takeA ? `A: ${fmt(aVal)}` : "No Ref A"}
+                      <div className="ui-fig mt-1 flex items-baseline justify-between gap-2">
+                        <span className="text-[16px] font-semibold text-ink">{takeB ? fmt(bVal) : "—"}</span>
+                        <span className="text-[11.5px] text-muted">{takeA ? `A: ${fmt(aVal)}` : ""}</span>
                       </div>
-                      {showDelta && (
-                        <div className="ui-fig mt-0.5 text-[11px] font-medium text-accent">
-                          Δ {formatDelta(aVal, bVal, dec, unit)}
+                      <div className="mt-2 flex flex-col gap-1">
+                        <div className="h-1 w-full overflow-hidden rounded-full bg-raised">
+                          <div
+                            className="h-full rounded-full bg-lpc transition-[width] duration-500 ease-(--ease-out)"
+                            style={{ width: `${pctA}%` }}
+                          />
                         </div>
-                      )}
+                        <div className="h-1 w-full overflow-hidden rounded-full bg-raised">
+                          <div
+                            className="h-full rounded-full bg-accent transition-[width] duration-500 ease-(--ease-out)"
+                            style={{ width: `${pctB}%` }}
+                          />
+                        </div>
+                      </div>
                     </div>
                   );
                 })}
@@ -1338,119 +1352,276 @@ export function CompareWorkspace() {
             )}
           </div>
 
-          {/* 2x2 Overlaid Acoustic Plots */}
-          <div className="grid grid-cols-12 gap-3">
-            <section className="ui-panel col-span-12 flex flex-col md:col-span-6">
-              <header className="flex min-h-9 items-center justify-between border-b border-line px-3 text-[12px]">
-                <span className="font-medium text-ink">
-                  <Prov kind="derived">Vowel trajectory (A → B)</Prov>
-                </span>
-                <span className="ui-fig text-muted">F1 × F2 Bark space</span>
-              </header>
-              <Trace
-                kind="vowel"
-                inspect
-                compareBaseline
-                frame={frameB}
-                baselineFrame={frameA}
-                targetVowel={activeTargetVowel}
-                label="Vowel chart comparing Reference Take A against Active Take B with directional vector arrow"
-                className="h-[250px] w-full"
-              />
-            </section>
-
-            <section className="ui-panel col-span-12 flex flex-col md:col-span-6">
-              <header className="flex min-h-9 items-center justify-between border-b border-line px-3 text-[12px]">
-                <span className="font-medium text-ink">
-                  <Prov kind="derived">Spectrum &amp; LPC overlay</Prov>
-                </span>
-                <span className="ui-fig text-muted">Dashed A · Solid B</span>
-              </header>
-              <Trace
-                kind="spectrum"
-                inspect
-                compareBaseline
-                frame={frameB}
-                baselineFrame={frameA}
-                targetVowel={activeTargetVowel}
-                label="Overlaid Fourier spectra and LPC envelopes of Reference Take A and Active Take B"
-                className="h-[250px] w-full"
-              />
-            </section>
-
-            <section className="ui-panel col-span-12 flex flex-col md:col-span-6">
-              <header className="flex min-h-9 items-center justify-between border-b border-line px-3 text-[12px]">
-                <span className="font-medium text-ink">
-                  <Prov kind="derived">Z-plane pole shift</Prov>
-                </span>
-                <span className="ui-fig text-muted">Rings A · × B</span>
-              </header>
-              <Trace
-                kind="zplane"
-                inspect
-                compareBaseline
-                frame={frameB}
-                baselineFrame={frameA}
-                targetVowel={activeTargetVowel}
-                label="Z-plane unit circle comparing pole radii and frequencies between Take A and Take B"
-                className="h-[230px] w-full"
-              />
-            </section>
-
-            <section className="ui-panel col-span-12 flex flex-col md:col-span-6">
-              <header className="flex min-h-9 items-center justify-between border-b border-line px-3 text-[12px]">
-                <span className="font-medium text-ink">
-                  <Prov kind="measured">Windowed frame waveform</Prov>
-                </span>
-                <span className="ui-fig text-muted">x[n] · w[n]</span>
-              </header>
-              <Trace
-                kind="scope"
-                inspect
-                compareBaseline
-                frame={frameB}
-                baselineFrame={frameA}
-                targetVowel={activeTargetVowel}
-                label="Time-domain windowed waveform scope comparing Take A and Take B"
-                className="h-[230px] w-full"
-              />
-            </section>
+          {/* Focused View Switcher Tabs */}
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line pb-1">
+            <div role="tablist" aria-label="Comparison view" className="flex gap-6">
+              {(
+                [
+                  ["morph3d", "3D Morph & Trajectory"],
+                  ["spectra", "Spectrum & Poles"],
+                  ["notes", "Waveform & Notes"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={compareTab === id}
+                  onClick={() => setCompareTab(id)}
+                  className="ui-tab min-h-10 text-[13.5px] font-medium"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* Side-by-side Notes Comparison */}
-          {(takeA || (slotBMode === "saved" && takeB)) && (
-            <section className="ui-panel p-3.5">
-              <h2 className="text-[13px] font-semibold text-ink">Side-by-side observation notes</h2>
-              <div className="mt-2.5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="rounded-(--radius-sm) border border-line bg-raised/40 p-2.5">
-                  <div className="mb-1 flex items-center justify-between text-[11px]">
-                    <span className="font-semibold text-lpc">REFERENCE A</span>
-                    <span className="truncate text-muted">{takeA ? takeA.title : "None pinned"}</span>
-                  </div>
-                  <p className="whitespace-pre-wrap text-[13px] text-ink">
-                    {takeA?.notes?.trim() ? takeA.notes : "No written notes for Reference A yet."}
-                  </p>
-                </div>
-
-                <div className="rounded-(--radius-sm) border border-line bg-raised/40 p-2.5">
-                  <div className="mb-1 flex items-center justify-between text-[11px]">
-                    <span className="font-semibold text-accent">ACTIVE B</span>
-                    <span className="truncate text-muted">
-                      {slotBMode === "saved"
-                        ? (takeB?.title ?? "None loaded")
-                        : slotBMode === "mic"
-                          ? "Live microphone"
-                          : "Built-in synth"}
+          {/* TAB 1: Interactive 3D A <-> B Morph Stage & Vowel Trajectory */}
+          {compareTab === "morph3d" && (
+            <div key="morph3d" className="stage-enter flex flex-col gap-3">
+              <div className="grid grid-cols-12 gap-4">
+                {/* Interactive 3D Stage */}
+                <section className="ui-panel col-span-12 flex flex-col md:col-span-7">
+                  <header className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-b border-line px-3.5 py-1.5">
+                    <span className="text-[13px] font-medium text-ink">
+                      <Prov kind="mapped">3D Acoustic Morph Stage</Prov>
                     </span>
-                  </div>
-                  <p className="whitespace-pre-wrap text-[13px] text-ink">
-                    {slotBMode === "saved"
-                      ? (takeB?.notes?.trim() ? takeB.notes : "No written notes for Active B yet.")
-                      : "Live audio comparing in real time against Reference A."}
+                    <div className="flex items-center gap-2">
+                      <InstrumentSelect
+                        ariaLabel="3D stage geometry"
+                        size="sm"
+                        align="right"
+                        value={compareShape}
+                        options={SHAPE_OPTIONS}
+                        onChange={setCompareShape}
+                        className="w-[155px]"
+                        menuWidthClass="w-[235px]"
+                      />
+                      {compareShape !== "tract" && (
+                        <button
+                          type="button"
+                          onClick={excitePlate}
+                          className="rounded-(--radius-sm) border border-line bg-raised px-2.5 py-1 text-[12px] font-medium text-ink transition-transform hover:border-accent active:scale-95"
+                        >
+                          Tap
+                        </button>
+                      )}
+                    </div>
+                  </header>
+
+                  <PlateStage
+                    interactive
+                    showNodalLines
+                    shapeModel={compareShape}
+                    frame={stageTelemetryFor3D}
+                    className="min-h-[320px] w-full flex-1"
+                  />
+
+                  {/* Animated A <-> B Crossfade Morph Controller */}
+                  {slotBMode === "saved" && frameA && frameB ? (
+                    <div className="flex flex-wrap items-center gap-3 border-t border-line bg-raised/40 px-3.5 py-2.5 text-[12px]">
+                      <button
+                        type="button"
+                        aria-pressed={autoMorph}
+                        onClick={() => setAutoMorph((p) => !p)}
+                        className={`rounded-(--radius-sm) border px-2.5 py-1 font-semibold transition-colors ${autoMorph
+                          ? "border-accent bg-accent text-accent-ink"
+                          : "border-line bg-surface text-ink hover:border-accent"
+                          }`}
+                      >
+                        {autoMorph ? "⟳ Auto-morphing A ↔ B" : "▶ Auto-morph"}
+                      </button>
+                      <span className="ui-fig font-semibold text-lpc">A</span>
+                      <input
+                        type="range"
+                        aria-label="Morph between Reference A and Take B"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={morphMix}
+                        onChange={(e) => {
+                          setAutoMorph(false);
+                          setMorphMix(Number(e.target.value));
+                        }}
+                        className="ui-slider flex-1"
+                      />
+                      <span className="ui-fig font-semibold text-accent">B</span>
+                      <span className="ui-fig w-[5ch] text-right text-muted">{Math.round(morphMix * 100)}%</span>
+                    </div>
+                  ) : (
+                    <p className="border-t border-line px-3.5 py-2 text-[12px] text-muted">
+                      Drag to orbit in 3D · Scroll to zoom · Click plate to scatter sand grains.
+                    </p>
+                  )}
+                </section>
+
+                {/* Vowel Space Trajectory Chart */}
+                <section className="ui-panel col-span-12 flex flex-col md:col-span-5">
+                  <header className="flex min-h-11 items-center justify-between border-b border-line px-3.5 text-[13px]">
+                    <span className="font-medium text-ink">
+                      <Prov kind="derived">Vowel Trajectory (A → B)</Prov>
+                    </span>
+                    <span className="ui-fig text-[12px] text-muted">F1 × F2</span>
+                  </header>
+                  <Trace
+                    kind="vowel"
+                    inspect
+                    compareBaseline
+                    frame={slotBMode === "saved" ? (morphedFrame ?? frameB) : null}
+                    baselineFrame={frameA}
+                    targetVowel={activeTargetVowel}
+                    label="Vowel chart comparing Reference Take A against Active Take B with live morphing position"
+                    className="min-h-[320px] w-full flex-1"
+                  />
+                  <p className="border-t border-line px-3.5 py-2.5 text-[12px] text-muted">
+                    Cyan ring marks Reference A; orange dot tracks {autoMorph && frameA && frameB ? "the live A ↔ B morph" : "Active B"}.
                   </p>
-                </div>
+                </section>
               </div>
-            </section>
+            </div>
+          )}
+
+          {/* TAB 2: Spectrum & Z-Plane Poles + Timeline Scrubbers */}
+          {compareTab === "spectra" && (
+            <div key="spectra" className="stage-enter flex flex-col gap-3">
+              {((takeA && takeA.durationSec > 0.2) || (slotBMode === "saved" && takeB && takeB.durationSec > 0.2)) && (
+                <div className="ui-panel grid grid-cols-1 gap-3 p-3.5 sm:grid-cols-2">
+                  {takeA && (
+                    <div className="flex items-center gap-2.5 text-[12px]">
+                      <span className="shrink-0 font-semibold text-lpc">Scrub A</span>
+                      <input
+                        type="range"
+                        min={0.08}
+                        max={takeA.durationSec}
+                        step={0.02}
+                        value={scrubASec ?? takeA.representativeFrame.timestampMs / 1000}
+                        onChange={(e) => setScrubASec(Number(e.target.value))}
+                        className="ui-slider flex-1"
+                      />
+                      <span className="ui-fig w-[6ch] text-right text-muted">
+                        {(scrubASec ?? takeA.representativeFrame.timestampMs / 1000).toFixed(2)}s
+                      </span>
+                    </div>
+                  )}
+                  {slotBMode === "saved" && takeB && (
+                    <div className="flex items-center gap-2.5 text-[12px]">
+                      <span className="shrink-0 font-semibold text-accent">Scrub B</span>
+                      <input
+                        type="range"
+                        min={0.08}
+                        max={takeB.durationSec}
+                        step={0.02}
+                        value={scrubBSec ?? takeB.representativeFrame.timestampMs / 1000}
+                        onChange={(e) => setScrubBSec(Number(e.target.value))}
+                        className="ui-slider flex-1"
+                      />
+                      <span className="ui-fig w-[6ch] text-right text-muted">
+                        {(scrubBSec ?? takeB.representativeFrame.timestampMs / 1000).toFixed(2)}s
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-12 gap-4">
+                <section className="ui-panel col-span-12 flex flex-col md:col-span-7">
+                  <header className="flex min-h-10 items-center justify-between border-b border-line px-3.5 text-[12.5px]">
+                    <span className="font-medium text-ink">
+                      <Prov kind="derived">Spectrum &amp; LPC Envelope Overlay</Prov>
+                    </span>
+                    <span className="ui-fig text-muted">Dashed A · Solid B</span>
+                  </header>
+                  <Trace
+                    kind="spectrum"
+                    inspect
+                    compareBaseline
+                    frame={frameB}
+                    baselineFrame={frameA}
+                    targetVowel={activeTargetVowel}
+                    label="Overlaid Fourier spectra and LPC envelopes of Reference Take A and Active Take B"
+                    className="h-[300px] w-full"
+                  />
+                </section>
+
+                <section className="ui-panel col-span-12 flex flex-col md:col-span-5">
+                  <header className="flex min-h-10 items-center justify-between border-b border-line px-3.5 text-[12.5px]">
+                    <span className="font-medium text-ink">
+                      <Prov kind="derived">Z-Plane Pole Shift</Prov>
+                    </span>
+                    <span className="ui-fig text-muted">Rings A · × B</span>
+                  </header>
+                  <Trace
+                    kind="zplane"
+                    inspect
+                    compareBaseline
+                    frame={frameB}
+                    baselineFrame={frameA}
+                    targetVowel={activeTargetVowel}
+                    label="Z-plane unit circle comparing pole radii and frequencies between Take A and Take B"
+                    className="h-[300px] w-full"
+                  />
+                </section>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: Windowed Waveform & Side-by-Side Notes */}
+          {compareTab === "notes" && (
+            <div key="notes" className="stage-enter flex flex-col gap-4">
+              <section className="ui-panel flex flex-col">
+                <header className="flex min-h-10 items-center justify-between border-b border-line px-3.5 text-[12.5px]">
+                  <span className="font-medium text-ink">
+                    <Prov kind="measured">Windowed Frame Waveform</Prov>
+                  </span>
+                  <span className="ui-fig text-muted">x[n] · w[n]</span>
+                </header>
+                <Trace
+                  kind="scope"
+                  inspect
+                  compareBaseline
+                  frame={frameB}
+                  baselineFrame={frameA}
+                  targetVowel={activeTargetVowel}
+                  label="Time-domain windowed waveform scope comparing Take A and Take B"
+                  className="h-[220px] w-full"
+                />
+              </section>
+
+              <section className="ui-panel p-4">
+                <h2 className="text-[13.5px] font-semibold text-ink">Side-by-side observation notes</h2>
+                <div className="mt-3 grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+                  <div className="rounded-(--radius-sm) border border-line bg-raised/40 p-3.5">
+                    <div className="mb-1.5 flex items-center justify-between text-[11.5px]">
+                      <span className="font-semibold text-lpc">REFERENCE A</span>
+                      <span className="truncate text-muted">{takeA ? takeA.title : "None pinned"}</span>
+                    </div>
+                    <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink">
+                      {takeA?.notes?.trim() ? takeA.notes : "No written notes for Reference A yet."}
+                    </p>
+                  </div>
+
+                  <div className="rounded-(--radius-sm) border border-line bg-raised/40 p-3.5">
+                    <div className="mb-1.5 flex items-center justify-between text-[11.5px]">
+                      <span className="font-semibold text-accent">ACTIVE B</span>
+                      <span className="truncate text-muted">
+                        {slotBMode === "saved"
+                          ? (takeB?.title ?? "None loaded")
+                          : slotBMode === "mic"
+                            ? "Live microphone"
+                            : "Built-in synth"}
+                      </span>
+                    </div>
+                    <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink">
+                      {slotBMode === "saved"
+                        ? takeB?.notes?.trim()
+                          ? takeB.notes
+                          : "No written notes for Take B yet."
+                        : "Speak or play a live note and click Record above to save it with annotations."}
+                    </p>
+                  </div>
+                </div>
+              </section>
+            </div>
           )}
         </section>
       </div>
