@@ -4,13 +4,42 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Prov, SourceSwitch, VowelKeys, type Provenance } from "@/components/instrument/controls";
+import { InstrumentSelect, type SelectOption } from "@/components/instrument/InstrumentSelect";
 import { PlateStage } from "@/components/instrument/PlateStage";
 import { Readout, type ReadoutField } from "@/components/instrument/Readout";
 import { Trace } from "@/components/instrument/Trace";
 import { SIGNAL_HZ_RANGE, SIGNAL_INFO, type SignalKind, type WaveKind } from "@/lib/dsp/signals";
 import { findVowel, nearestVowel, VOWEL_TARGETS, vowelGlyph } from "@/lib/dsp/vowel-targets";
 import { WINDOW_INFO, WINDOW_TYPES } from "@/lib/dsp/windows";
-import { labRuntime, useLabStore, type LabView } from "@/store/lab-store";
+import { labRuntime, useLabStore, type LabView, type LpcMethod, type ShapeModel } from "@/store/lab-store";
+
+const SHAPE_MODELS: { id: ShapeModel; label: string; hint: string }[] = [
+  { id: "square", label: "Square plate", hint: "F1 chooses m, F2 chooses n. Drag to orbit, scroll to zoom, click plate to scatter sand." },
+  { id: "circular", label: "Bessel drum", hint: "Cylindrical Bessel J_m(αr)cos(mθ) modes on a circular brass-rimmed membrane." },
+  { id: "harmonic", label: "Harmonic field", hint: "Superposition of top-6 live FFT peaks — responds to any voice, whistle, consonant or chord." },
+  { id: "tract", label: "3D Vocal tract", hint: "Kelly–Lochbaum 3D resonator tube from glottis (left) to lips (right), driven by PARCOR k_m." },
+];
+
+const SHAPE_SELECT_OPTIONS: readonly SelectOption<ShapeModel>[] = [
+  { value: "square", label: "Square plate", hint: "Chladni C=0" },
+  { value: "circular", label: "Bessel drum", hint: "Circular J_m" },
+  { value: "harmonic", label: "Harmonic field", hint: "3D FFT wave" },
+  { value: "tract", label: "3D Vocal tract", hint: "Resonator tube" },
+];
+
+const LPC_SELECT_OPTIONS: readonly SelectOption<LpcMethod>[] = [
+  { value: "autocorr", label: "LPC Autocorr", hint: "Yule–Walker" },
+  { value: "burg", label: "LPC Burg", hint: "Lattice MEM" },
+];
+
+const SOURCE_WAVE_OPTIONS: readonly SelectOption<WaveKind>[] = [
+  { value: "voice", label: "Synthetic voice (vowels)", hint: "Source–filter" },
+  ...(Object.keys(SIGNAL_INFO) as SignalKind[]).map((kind) => ({
+    value: kind as WaveKind,
+    label: `Test: ${SIGNAL_INFO[kind].label}`,
+    hint: kind === "noise" ? "Unvoiced" : "Signal",
+  })),
+];
 
 const VIEWS: { view: LabView; label: string }[] = [
   { view: "all", label: "All" },
@@ -33,6 +62,7 @@ const READINGS: {
       { label: "Period", field: "period", unit: "ms" },
       { label: "Pitch clarity", field: "clarity" },
       { label: "Level", field: "level", unit: "dB FS" },
+      { label: "Centroid", field: "centroid", unit: "Hz", extra: { field: "flatness", unit: "% noise" } },
       { label: "Jitter", field: "jitter", unit: "%" },
       { label: "Shimmer", field: "shimmer", unit: "dB" },
       { label: "Syllables", field: "syllables", unit: "per s" },
@@ -41,9 +71,11 @@ const READINGS: {
   {
     kind: "derived",
     rows: [
+      { label: "Regime", field: "regime" },
       { label: "F1", field: "f1", unit: "Hz", extra: { field: "b1", unit: "wide" } },
       { label: "F2", field: "f2", unit: "Hz", extra: { field: "b2", unit: "wide" } },
       { label: "F3", field: "f3", unit: "Hz", extra: { field: "b3", unit: "wide" } },
+      { label: "Est. tract", field: "tractLength", unit: "cm", extra: { field: "antiZero", unit: "Hz Z0" } },
       { label: "Nearest vowel", field: "vowel", bangla: true },
       { label: "From target", field: "bark", unit: "Bark" },
       { label: "Match", field: "score", unit: "of 100" },
@@ -191,23 +223,19 @@ function VoiceControls() {
   const setVolume = useLabStore((s) => s.setVolume);
   const signal = synth.wave !== "voice";
   return (
-    <div className="px-3 py-2">
-      <label className="block py-1.5">
-        <span className="ui-label">Built-in source</span>
-        <select
+    <div className="stage-enter px-3 py-2">
+      <div className="py-1.5">
+        <span className="ui-label mb-1.5 block">Built-in source</span>
+        <InstrumentSelect
+          ariaLabel="Built-in source"
           value={synth.wave}
+          options={SOURCE_WAVE_OPTIONS}
           disabled={liveInput}
-          onChange={(e) => updateSynth({ wave: e.target.value as WaveKind })}
-          className="mt-1.5 h-10 w-full rounded-(--radius-sm) border border-control bg-raised px-2.5 text-[14px] text-ink disabled:opacity-50"
-        >
-          <option value="voice">Synthetic voice (vowels)</option>
-          {(Object.keys(SIGNAL_INFO) as SignalKind[]).map((kind) => (
-            <option key={kind} value={kind}>
-              Test signal: {SIGNAL_INFO[kind].label.toLowerCase()}
-            </option>
-          ))}
-        </select>
-      </label>
+          onChange={(val) => updateSynth({ wave: val })}
+          className="w-full"
+          menuWidthClass="w-full min-w-[230px]"
+        />
+      </div>
       {signal && (
         <>
           <Slider
@@ -254,9 +282,43 @@ function AnalysisControls() {
   const update = useLabStore((s) => s.updateAnalyzerOptions);
   const nodal = useLabStore((s) => s.showNodalLines);
   const setNodal = useLabStore((s) => s.setShowNodalLines);
+  const cepstrum = useLabStore((s) => s.showCepstrum);
+  const setCepstrum = useLabStore((s) => s.setShowCepstrum);
+  const calibrateVtl = useLabStore((s) => s.calibrateVtlToCurrentVoice);
+  const lpcMethod = options.lpcMethod ?? "autocorr";
+  const vtlScale = options.vtlScale ?? 1;
   const info = WINDOW_INFO[options.windowType];
   return (
     <div className="px-3 py-2">
+      <div className="flex min-h-9 items-center justify-between gap-4">
+        <span className="ui-label">LPC estimator</span>
+        <div role="radiogroup" aria-label="LPC estimator" className="flex gap-3">
+          {(["autocorr", "burg"] as LpcMethod[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={lpcMethod === m}
+              className="ui-tab text-[12px] font-medium"
+              onClick={() => update({ lpcMethod: m })}
+            >
+              {m === "autocorr" ? "Autocorr" : "Burg lattice"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex min-h-9 items-center justify-between gap-4">
+        <span className="ui-label">Cepstral envelope &amp; zeros</span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={cepstrum}
+          className="ui-tab text-[13px] font-medium"
+          onClick={() => setCepstrum(!cepstrum)}
+        >
+          {cepstrum ? "Shown" : "Hidden"}
+        </button>
+      </div>
       <div className="flex min-h-9 items-center justify-between gap-4">
         <span className="ui-label">Pre-emphasis 0.97</span>
         <button type="button" role="switch" aria-checked={options.preEmphasis > 0} className="ui-tab text-[13px] font-medium" onClick={() => update({ preEmphasis: options.preEmphasis > 0 ? 0 : 0.97 })}>
@@ -270,6 +332,33 @@ function AnalysisControls() {
         </button>
       </div>
       <Slider label="Model order" value={options.lpcOrder} min={4} max={24} step={2} format={(v) => `${v} poles`} onCommit={(v) => update({ lpcOrder: v })} />
+      <Slider
+        label="Speaker tract calibration"
+        value={vtlScale}
+        min={0.8}
+        max={1.25}
+        step={0.01}
+        format={(v) => `× ${v.toFixed(2)}`}
+        onCommit={(v) => update({ vtlScale: v })}
+      />
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={calibrateVtl}
+          className="rounded-(--radius-sm) border border-line bg-raised px-2.5 py-1 text-[12px] font-medium text-ink hover:border-accent"
+        >
+          Fit target to current voice
+        </button>
+        {Math.abs(vtlScale - 1) > 0.005 && (
+          <button
+            type="button"
+            onClick={() => update({ vtlScale: 1 })}
+            className="text-[12px] text-muted hover:text-ink"
+          >
+            Reset 1.00×
+          </button>
+        )}
+      </div>
       <p className="ui-label mt-2">
         {info.label} window: {info.formula}. Highest sidelobe {info.peakSidelobeDb.toFixed(1)} dB, main lobe{" "}
         {info.mainLobeBins} bins. Change the window in the Scope panel.
@@ -481,8 +570,15 @@ export function Lab() {
   const sourceMode = useLabStore((s) => s.sourceMode);
   const selectTarget = useLabStore((s) => s.selectTarget);
   const windowType = useLabStore((s) => s.analyzerOptions.windowType);
+  const lpcMethod = useLabStore((s) => s.analyzerOptions.lpcMethod ?? "autocorr");
   const updateOptions = useLabStore((s) => s.updateAnalyzerOptions);
   const nodal = useLabStore((s) => s.showNodalLines);
+  const showCepstrum = useLabStore((s) => s.showCepstrum);
+  const setShowCepstrum = useLabStore((s) => s.setShowCepstrum);
+  const shapeModel = useLabStore((s) => s.shapeModel);
+  const setShapeModel = useLabStore((s) => s.setShapeModel);
+  const excitePlate = useLabStore((s) => s.excitePlate);
+  const activeShapeInfo = SHAPE_MODELS.find((m) => m.id === shapeModel) ?? SHAPE_MODELS[0];
   const [side, setSide] = useState<(typeof SIDE_TABS)[number]>("Readings");
   const target = findVowel(targetId);
   const solo = activeView !== "all";
@@ -543,6 +639,14 @@ export function Lab() {
               <span className="text-ink"><Readout field="guidance" /></span>
             </p>
           )}
+          <p data-testid="lab-regime-strip" className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[13px] text-muted">
+            <span className="rounded-(--radius-sm) border border-line bg-surface px-2 py-0.5 text-[12px] font-semibold text-ink">
+              <Readout field="regime" />
+            </span>
+            <span>
+              <Readout field="regimeDetail" />
+            </span>
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
           <SourceSwitch />
@@ -598,12 +702,53 @@ export function Lab() {
           <VowelKeys className="border-t border-line p-0.5" />
         </Panel>
 
-        <Panel view="figure" title="Figure" kind="mapped" className="col-span-12 md:col-span-7 lg:col-span-5">
-          <PlateStage interactive showNodalLines={nodal} className={`w-full ${plotHeight || "min-h-[340px] flex-1 lg:min-h-[300px]"}`} />
+        <Panel
+          view="figure"
+          title="3D Acoustic Stage"
+          kind="mapped"
+          className="col-span-12 md:col-span-7 lg:col-span-5"
+          tools={
+            <div className="flex items-center gap-2">
+              <InstrumentSelect
+                ariaLabel="3D geometry"
+                size="sm"
+                align="right"
+                value={shapeModel}
+                options={SHAPE_SELECT_OPTIONS}
+                onChange={setShapeModel}
+                className="w-[152px]"
+                menuWidthClass="w-[235px]"
+              />
+              {shapeModel !== "tract" && (
+                <button
+                  type="button"
+                  onClick={excitePlate}
+                  className="rounded-(--radius-sm) border border-line bg-raised px-2.5 py-1 text-[12px] font-medium text-ink transition-transform hover:border-accent active:scale-95"
+                >
+                  Tap plate
+                </button>
+              )}
+            </div>
+          }
+        >
+          <PlateStage
+            interactive
+            showNodalLines={nodal}
+            shapeModel={shapeModel}
+            className={`w-full ${plotHeight || "min-h-[340px] flex-1 lg:min-h-[300px]"}`}
+          />
           <p className="flex flex-wrap items-center justify-between gap-x-4 border-t border-line px-3 py-2 text-[12px] text-muted">
-            <span>F1 chooses m, F2 chooses n. Drag to turn the plate.</span>
+            <span>{activeShapeInfo.hint}</span>
             <span className="ui-fig text-ink">
-              m <Readout field="modeM" /> · n <Readout field="modeN" />
+              {shapeModel === "tract" ? (
+                <>
+                  L <Readout field="tractLength" /> cm
+                </>
+              ) : (
+                <>
+                  m <Readout field="modeM" /> · n <Readout field="modeN" />
+                </>
+              )}
             </span>
           </p>
         </Panel>
@@ -647,11 +792,26 @@ export function Lab() {
           kind="derived"
           className="col-span-12 lg:col-span-5"
           tools={
-            <p className="flex items-center gap-4 text-[12px] text-muted">
-              <span className="flex items-center gap-1.5"><span className="h-0.5 w-3 bg-muted" />FFT</span>
-              <span className="flex items-center gap-1.5"><span className="h-0.5 w-3 bg-lpc" />LPC</span>
-              <span className="flex items-center gap-1.5"><span className="h-0.5 w-3 bg-accent" />Formants</span>
-            </p>
+            <div className="flex items-center gap-2.5 text-[12px]">
+              <InstrumentSelect
+                ariaLabel="LPC model"
+                size="sm"
+                align="right"
+                value={lpcMethod}
+                options={LPC_SELECT_OPTIONS}
+                onChange={(m) => updateOptions({ lpcMethod: m })}
+                className="w-[140px]"
+                menuWidthClass="w-[215px]"
+              />
+              <button
+                type="button"
+                aria-pressed={showCepstrum}
+                onClick={() => setShowCepstrum(!showCepstrum)}
+                className="ui-tab text-[12px] font-medium"
+              >
+                + Cepstrum
+              </button>
+            </div>
           }
         >
           <Trace kind="spectrum" inspect compareBaseline label="Magnitude spectrum with the linear-prediction envelope and formant markers" className={`w-full ${plotHeight || "h-[220px] lg:h-[clamp(150px,20svh,240px)]"}`} />
