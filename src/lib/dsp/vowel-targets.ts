@@ -109,15 +109,18 @@ export function hzToBark(hz: number): number {
   return (26.81 * hz) / (1960 + hz) - 0.53;
 }
 
-export function distanceBark(f1: number, f2: number, target: VowelTarget): number {
-  return Math.hypot(hzToBark(f1) - hzToBark(target.targetF1), hzToBark(f2) - hzToBark(target.targetF2));
+export function distanceBark(f1: number, f2: number, target: VowelTarget, vtlScale = 1): number {
+  return Math.hypot(
+    hzToBark(f1) - hzToBark(target.targetF1 * vtlScale),
+    hzToBark(f2) - hzToBark(target.targetF2 * vtlScale),
+  );
 }
 
-export function nearestVowel(f1: number, f2: number): VowelTarget {
+export function nearestVowel(f1: number, f2: number, vtlScale = 1): VowelTarget {
   let best = VOWEL_TARGETS[0];
   let bestD = Infinity;
   for (const v of VOWEL_TARGETS) {
-    const d = distanceBark(f1, f2, v);
+    const d = distanceBark(f1, f2, v, vtlScale);
     if (d < bestD) {
       bestD = d;
       best = v;
@@ -153,6 +156,7 @@ export function evaluateTargetConvergence(
     convergenceScore: 0,
     guidance: GUIDANCE.silent,
   },
+  vtlScale = 1,
 ): TargetMatch {
   out.targetId = target.id;
   if (!(formants.f1 > 0) || !(formants.f2 > 0)) {
@@ -162,10 +166,12 @@ export function evaluateTargetConvergence(
     out.guidance = GUIDANCE.silent;
     return out;
   }
-  const d1 = hzToBark(formants.f1) - hzToBark(target.targetF1);
-  const d2 = hzToBark(formants.f2) - hzToBark(target.targetF2);
+  const tf1 = target.targetF1 * vtlScale;
+  const tf2 = target.targetF2 * vtlScale;
+  const d1 = hzToBark(formants.f1) - hzToBark(tf1);
+  const d2 = hzToBark(formants.f2) - hzToBark(tf2);
   const bark = Math.hypot(d1, d2);
-  out.euclideanDistanceHz = Math.hypot(formants.f1 - target.targetF1, formants.f2 - target.targetF2);
+  out.euclideanDistanceHz = Math.hypot(formants.f1 - tf1, formants.f2 - tf2);
   out.distanceBark = bark;
   out.convergenceScore = 100 * Math.exp(-0.5 * bark * bark);
   if (out.convergenceScore >= LOCK_SCORE) out.guidance = GUIDANCE.locked;

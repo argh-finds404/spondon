@@ -4,9 +4,10 @@ import { createStageTraceBuffers, DEFAULT_ANALYZER_OPTIONS, FRAME_SIZE } from "@
 import { AudioController, DEFAULT_SYNTH, type SourceMode, type SynthSettings } from "@/lib/dsp/audio-controller";
 import { chladniModes } from "@/lib/chladni";
 import { evaluateLPCEnvelopeDb } from "@/lib/dsp/fft-lpc";
+import { copyRegimeInto, createRegimeTelemetry, TRACT_SECTIONS } from "@/lib/dsp/regime";
 import { DEFAULT_TARGET, evaluateTargetConvergence, findVowel } from "@/lib/dsp/vowel-targets";
 import { getWindow } from "@/lib/dsp/windows";
-import type { ComplexPoint, DSPFrameTelemetry, WindowType } from "@/types/dsp";
+import type { ComplexPoint, DSPFrameTelemetry, LpcMethod, ShapeModel, WindowType } from "@/types/dsp";
 
 /** "all" shows every panel; the others solo one. */
 export type LabView = "all" | "figure" | "vowel" | "spectrum" | "poles" | "scope" | "time";
@@ -110,6 +111,9 @@ export interface LabState {
   bypassedStage: number | null;
   recomputeCount: number;
   showNodalLines: boolean;
+  showCepstrum: boolean;
+  shapeModel: ShapeModel;
+  plateExciteCount: number;
   targetId: string;
   synth: SynthSettings;
   analyzerOptions: AnalyzerOptions;
@@ -122,6 +126,10 @@ export interface LabState {
   clearExperimentBaseline: () => void;
   resetExperiment: (id?: ExperimentId) => void;
   setShowNodalLines: (show: boolean) => void;
+  setShowCepstrum: (show: boolean) => void;
+  setShapeModel: (model: ShapeModel) => void;
+  excitePlate: () => void;
+  calibrateVtlToCurrentVoice: () => void;
   setSourceMode: (mode: SourceMode) => Promise<void>;
   setMicGain: (gain: number) => void;
   setAutoCaptureArmed: (armed: boolean) => void;
@@ -168,11 +176,15 @@ function createSnapshotBuffer(): DSPFrameTelemetry {
     sampleRate: 48000,
     analysisRate: 12000,
     windowType: "hamming",
+    lpcMethod: "autocorr",
+    vtlScale: 1,
     voiced: false,
     timeDomainRaw: new Float32Array(FRAME_SIZE),
     timeDomainWindowed: new Float32Array(FRAME_SIZE),
     fftMagnitudeDb: new Float32Array(FRAME_SIZE).fill(-120),
     lpcEnvelopeDb: new Float32Array(FRAME_SIZE).fill(-120),
+    cepstralEnvelopeDb: new Float32Array(FRAME_SIZE).fill(-120),
+    vocalTractArea: new Float32Array(TRACT_SECTIONS).fill(0.5),
     lpcCoefficients: new Array<number>(12).fill(0),
     zPlanePoles: poles,
     formants: { f1: 0, f2: 0, f3: 0, b1: 0, b2: 0, b3: 0, confidence: 0 },
@@ -192,6 +204,7 @@ function createSnapshotBuffer(): DSPFrameTelemetry {
       convergenceScore: 0,
       guidance: "Waiting for a voiced sound.",
     },
+    regime: createRegimeTelemetry(),
     stageBuffers: createStageTraceBuffers(12),
   };
 }
@@ -201,11 +214,16 @@ function copyTelemetryInto(src: DSPFrameTelemetry, dst: DSPFrameTelemetry): void
   dst.sampleRate = src.sampleRate;
   dst.analysisRate = src.analysisRate;
   dst.windowType = src.windowType;
+  dst.lpcMethod = src.lpcMethod;
+  dst.vtlScale = src.vtlScale;
   dst.voiced = src.voiced;
   dst.timeDomainRaw.set(src.timeDomainRaw);
   dst.timeDomainWindowed.set(src.timeDomainWindowed);
   dst.fftMagnitudeDb.set(src.fftMagnitudeDb);
   dst.lpcEnvelopeDb.set(src.lpcEnvelopeDb);
+  dst.cepstralEnvelopeDb.set(src.cepstralEnvelopeDb);
+  dst.vocalTractArea.set(src.vocalTractArea);
+  copyRegimeInto(src.regime, dst.regime);
   if (dst.lpcCoefficients.length !== src.lpcCoefficients.length) {
     dst.lpcCoefficients = src.lpcCoefficients.slice();
   } else {
@@ -627,7 +645,7 @@ class LabRuntime {
     t.formants.confidence = Math.max(0.15, 0.5 * (q1 + q2));
     t.voiced = true;
     const target = findVowel(t.activeTargetMatch.targetId);
-    evaluateTargetConvergence(t.formants, target, t.activeTargetMatch);
+    evaluateTargetConvergence(t.formants, target, t.activeTargetMatch, t.vtlScale || 1);
   }
 
   getCapturedRawPcm(): Float32Array | null {
@@ -803,6 +821,9 @@ export const useLabStore = create<LabState>((set, get) => ({
   bypassedStage: null,
   recomputeCount: 0,
   showNodalLines: true,
+  showCepstrum: false,
+  shapeModel: "square",
+  plateExciteCount: 0,
   targetId: DEFAULT_TARGET.id,
   synth: { ...DEFAULT_SYNTH },
   analyzerOptions: { ...DEFAULT_ANALYZER_OPTIONS },
@@ -871,6 +892,28 @@ export const useLabStore = create<LabState>((set, get) => ({
   },
 
   setShowNodalLines: (showNodalLines) => set({ showNodalLines }),
+
+  setShowCepstrum: (showCepstrum) => set({ showCepstrum }),
+
+  setShapeModel: (shapeModel) => set({ shapeModel }),
+
+  excitePlate: () => set((s) => ({ plateExciteCount: s.plateExciteCount + 1 })),
+
+  calibrateVtlToCurrentVoice: () => {
+    const t = labRuntime.getActiveTelemetry();
+    const target = findVowel(get().targetId);
+    let scale = 1;
+    if (t.voiced && t.formants.f1 > 150 && t.formants.f2 > 550) {
+      // Ratio of speaker's measured (F1, F2) to the reference target's (F1, F2), geometric mean.
+      const r1 = t.formants.f1 / target.targetF1;
+      const r2 = t.formants.f2 / target.targetF2;
+      scale = Math.sqrt(r1 * r2);
+    } else if (t.regime.vocalTractLengthCm > 11) {
+      scale = 17.2 / t.regime.vocalTractLengthCm;
+    }
+    const clamped = Number(Math.max(0.8, Math.min(1.28, scale)).toFixed(2));
+    get().updateAnalyzerOptions({ vtlScale: clamped });
+  },
 
   setSourceMode: async (mode) => {
     const ctrl = labRuntime.getController();
@@ -1096,6 +1139,9 @@ export const useLabStore = create<LabState>((set, get) => ({
       frozen: false,
       bypassedStage: null,
       baselineVersion: get().baselineVersion + 1,
+      showNodalLines: true,
+      showCepstrum: false,
+      shapeModel: "square",
       targetId: DEFAULT_TARGET.id,
       synth,
       analyzerOptions: opts,
@@ -1106,4 +1152,4 @@ export const useLabStore = create<LabState>((set, get) => ({
   clearTrail: () => labRuntime.clearTrail(),
 }));
 
-export type { WindowType };
+export type { LpcMethod, ShapeModel, WindowType };

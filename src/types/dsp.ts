@@ -1,6 +1,33 @@
 /** Telemetry contract between the DSP engine and everything that draws it. */
 
 export type WindowType = "rectangular" | "hamming" | "hann" | "blackman";
+export type LpcMethod = "autocorr" | "burg";
+export type ShapeModel = "square" | "circular" | "harmonic" | "tract";
+export type AcousticRegime = "silence" | "vowel" | "sonorant" | "fricative" | "plosive" | "instrument";
+
+export interface SpectralPeak {
+  freqHz: number;
+  db: number;
+  ampLinear: number;
+}
+
+export interface RegimeTelemetry {
+  kind: AcousticRegime;
+  label: string;
+  detail: string;
+  spectralCentroidHz: number;
+  /** Wiener entropy in [0, 1]: near 0 for tonal harmonics, near 1 for white noise. */
+  spectralFlatness: number;
+  spectralTiltDb: number;
+  onsetFluxDb: number;
+  trajectorySpeedHzPerSec: number;
+  vocalTractLengthCm: number;
+  cepstralF0Hz: number;
+  antiResonanceHz: number;
+  antiResonanceDepthDb: number;
+  /** Up to 6 prominent spectral peaks for multi-harmonic standing-wave synthesis. */
+  topPeaks: SpectralPeak[];
+}
 
 /** A root of the LPC polynomial A(z), i.e. a pole of the vocal-tract model H(z) = G / A(z). */
 export interface ComplexPoint {
@@ -108,6 +135,8 @@ export interface DSPFrameTelemetry {
   /** Rate after decimation; every array below is at this rate. */
   analysisRate: number;
   windowType: WindowType;
+  lpcMethod: LpcMethod;
+  vtlScale: number;
   /** True when the frame is loud and periodic enough to trust. */
   voiced: boolean;
   /** 512 samples, x[n]. */
@@ -118,11 +147,16 @@ export interface DSPFrameTelemetry {
   fftMagnitudeDb: Float32Array;
   /** 512 bins on the same scale as fftMagnitudeDb, from G / |A(e^jw)|. */
   lpcEnvelopeDb: Float32Array;
+  /** 512 bins of homomorphic liftered cepstral envelope in dB (captures poles and zeros). */
+  cepstralEnvelopeDb: Float32Array;
+  /** 13 normalized cross-sectional vocal-tract tube areas from glottis (0) to lips (12). */
+  vocalTractArea: Float32Array;
   /** a_1 ... a_p of A(z) = 1 - sum a_k z^-k */
   lpcCoefficients: number[];
   zPlanePoles: ComplexPoint[];
   formants: FormantPeak;
   stability: VoiceStabilityMetrics;
   activeTargetMatch: TargetMatch;
+  regime: RegimeTelemetry;
   stageBuffers: StageTraceBuffers;
 }

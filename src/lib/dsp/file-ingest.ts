@@ -1,6 +1,8 @@
 import { chladniModes } from "@/lib/chladni";
 import { analyzeRecording } from "@/lib/dsp/offline";
 import { createStageTraceBuffers, FRAME_SIZE, VoiceAnalyzer } from "@/lib/dsp/analyzer";
+import { computeVocalTractArea, solveBurgLPC } from "@/lib/dsp/models";
+import { createRegimeTelemetry, extractTopSpectralPeaks, TRACT_SECTIONS } from "@/lib/dsp/regime";
 import { DEFAULT_TARGET, evaluateTargetConvergence, findVowel, nearestVowel } from "@/lib/dsp/vowel-targets";
 import { decodeWav, encodeWav } from "@/lib/dsp/wav";
 import type { SavedTake, SavedTakePole, SavedTakeRepresentativeFrame, TakeSourceType } from "@/lib/storage/takes-vault";
@@ -364,16 +366,35 @@ export function telemetryFromSavedTake(take: SavedTake): DSPFrameTelemetry {
     winArr[i] = rep.timeDomainWindowed[i];
   }
 
+  const tractArea = new Float32Array(TRACT_SECTIONS).fill(0.5);
+  let rawEnergy = 0;
+  for (let i = 0; i < rawArr.length; i++) rawEnergy += rawArr[i] * rawArr[i];
+  if (rawEnergy > 1e-8) {
+    const pre = new Float32Array(rawArr.length);
+    pre[0] = rawArr[0] * 0.03;
+    for (let i = 1; i < pre.length; i++) pre[i] = rawArr[i] - 0.97 * rawArr[i - 1];
+    const burg = solveBurgLPC(pre, 12);
+    computeVocalTractArea(burg.reflectionK, tractArea);
+  }
+
+  const regime = createRegimeTelemetry();
+  const analysisRate = rep.analysisRate || 12000;
+  extractTopSpectralPeaks(fftArr, analysisRate, regime.topPeaks);
+
   return {
     timestampMs: rep.timestampMs,
     sampleRate: rep.sampleRate || take.sampleRate,
-    analysisRate: rep.analysisRate || 12000,
+    analysisRate,
     windowType: rep.windowType || "hamming",
+    lpcMethod: "autocorr",
+    vtlScale: 1,
     voiced: rep.voiced,
     timeDomainRaw: rawArr,
     timeDomainWindowed: winArr,
     fftMagnitudeDb: fftArr,
     lpcEnvelopeDb: lpcArr,
+    cepstralEnvelopeDb: new Float32Array(lpcArr),
+    vocalTractArea: tractArea,
     lpcCoefficients: [],
     zPlanePoles: poles,
     formants,
@@ -387,6 +408,7 @@ export function telemetryFromSavedTake(take: SavedTake): DSPFrameTelemetry {
       syllablesPerSec: 0,
     },
     activeTargetMatch,
+    regime,
     stageBuffers: createStageTraceBuffers(12),
   };
 }
